@@ -1,0 +1,2349 @@
+# -*- coding: utf-8 -*-
+# <nbformat>3.0</nbformat>
+
+# <headingcell level=1>
+
+# Is It Too Early in the NBA Season to Judge Players and Spin Narratives?
+
+# <markdowncell>
+
+# **A Data Science Project by Travis Belanger, Joseph Lee, and Kevin Oh**
+
+# <markdowncell>
+
+# Here we are, in early December, and NBA fans and pundits are going all-out with their judgements and predictions.  Anthony Bennett, the number one pick in the 2013 NBA Draft who started the season missing his first 16 field goal attempts (his current field goal percentage is around 20-25%), was a terrible draft mistake.  The New York Knicks, at 5-14, have no shot of advancing in the playoffs, much less winning the NBA championship.  The Miami Heat, the two-time defending NBA champions who are two games behind the Indiana Pacers in the Eastern Conference standings, are never going to win the top playoff seed.  The Eastern Conference, which currently fields only 2-3 teams above .500, is the worst conference ever and has created the biggest conference disparity in the history of the NBA.
+# 
+# All decided by now, about 40 days into the NBA season.
+# 
+# What many fans and pundits fail to understand are the randomness and complex intracacies of sports - the ebbs and flows within each season that tend to average out over the long run.  With each ebb and each flow, journalists love to spin narratives about the causes and long-run implications of each random fluctuation.  "That player has had great practices recently, and his high confidence is making him shoot better."  "That rookie shouldn't have been drafted where he was."  "The defense really made the other team shoot poorly today."
+# 
+# The goal of this project is to approach the results from the beginning of the NBA season in a more principled manner.  As a cutoff point, we use the end of November 2013, 33 days into the current 2013-2014 season.  For a detailed storytelling of the first 33 days of the NBA season, please see http://www.grantland.com/blog/the-triangle/post/_/id/84665/bill-and-jalens-33-day-recap-the-first-birdmester.  (We actually find Grantland discussions to be pretty intelligent, but the authors nonetheless construct stories and pass judgements like any other fan.)
+# 
+# Our primary research question pertains to whether or not one can make accurate naive predictions for the entire season in the first 33 days of the season (pre-December 1), and whether or not we can improve on those predictions using statistical modeling.  If we can improve those predictions, by how much?
+# 
+# First, we scrape and clean data for both the 2012-2013 and 2013-2014 NBA seasons from CBS Sports.  After conducting some exploratory analyses on several variables, we concentrate on modeling and predicting field goal percentage (FG%).  We propose Bayesian hierarchical modeling as our prediction method and argue intuitively why it should trump the "naive" MLE method.  We outline three hierarchical models of varying complexity and implement them on the 2012-2013 pre-December data to make predictions for the rest of the 2012-2013 season.  We then compare their prediction results to the MLE predictions and to actual post-December data.  Lastly, we implement one of our models for the current 2013-2014 season and offer predictions for what's to come during the remainder of the season.
+# 
+# To avoid confusion, we henceforth refer to the 2012-2013 season as "2013" and the current 2013-2014 season as "2014."
+
+# <headingcell level=2>
+
+# Gathering the Data
+
+# <markdowncell>
+
+# We start off with the standard imports and adjustments included at the top of most of the homeworks.
+
+# <codecell>
+
+%matplotlib inline
+
+import json
+
+import requests
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from pattern import web
+
+pd.set_option('display.width', 500)
+pd.set_option('display.max_columns', 30)
+
+# set some nicer defaults for matplotlib
+from matplotlib import rcParams
+
+#these colors come from colorbrewer2.org. Each is an RGB triplet
+dark2_colors = [(0.10588235294117647, 0.6196078431372549, 0.4666666666666667),
+                (0.8509803921568627, 0.37254901960784315, 0.00784313725490196),
+                (0.4588235294117647, 0.4392156862745098, 0.7019607843137254),
+                (0.9058823529411765, 0.1607843137254902, 0.5411764705882353),
+                (0.4, 0.6509803921568628, 0.11764705882352941),
+                (0.9019607843137255, 0.6705882352941176, 0.00784313725490196),
+                (0.6509803921568628, 0.4627450980392157, 0.11372549019607843),
+                (0.4, 0.4, 0.4)]
+
+rcParams['figure.figsize'] = (10, 6)
+rcParams['figure.dpi'] = 150
+rcParams['axes.color_cycle'] = dark2_colors
+rcParams['lines.linewidth'] = 2
+rcParams['axes.grid'] = False
+rcParams['axes.facecolor'] = 'white'
+rcParams['font.size'] = 14
+rcParams['patch.edgecolor'] = 'none'
+
+
+def remove_border(axes=None, top=False, right=False, left=True, bottom=True):
+    """
+    Minimize chartjunk by stripping out unnecessary plot borders and axis ticks
+    
+    The top/right/left/bottom keywords toggle whether the corresponding plot border is drawn
+    """
+    ax = axes or plt.gca()
+    ax.spines['top'].set_visible(top)
+    ax.spines['right'].set_visible(right)
+    ax.spines['left'].set_visible(left)
+    ax.spines['bottom'].set_visible(bottom)
+    
+    #turn off all ticks
+    ax.yaxis.set_ticks_position('none')
+    ax.xaxis.set_ticks_position('none')
+    
+    #now re-enable visibles
+    if top:
+        ax.xaxis.tick_top()
+    if bottom:
+        ax.xaxis.tick_bottom()
+    if left:
+        ax.yaxis.tick_left()
+    if right:
+        ax.yaxis.tick_right()
+
+# <headingcell level=3>
+
+# Getting the Raw Data for a Single Test Player
+
+# <markdowncell>
+
+# We need to grab all the player IDs from CBSSports so we can go after the data on the CBS website itself. We do this using the CSB Sports developers API to pull out just the player ids, names, and positions.
+
+# <codecell>
+
+"""
+function: get_player_ids
+
+description: gets all basketball player ids from CBSSports
+
+inputs: nothing
+
+output: list of player ids
+"""
+
+def get_player_ids():
+    raw_data = requests.get('http://api.cbssports.com/fantasy/players/list?version=2.0&SPORT=basketball&response_format=JSON').text
+    raw_data = json.loads(raw_data)['body']['players']
+    data = [(int(player['id']), player['fullname'], player['position']) for player in raw_data]
+    return data
+
+# <markdowncell>
+
+# The following function is a failed attempt to extract the player data. It is included only for completeness.
+
+# <codecell>
+
+"""
+
+*****This was a first attempt. It was way too complicated and had too many edge cases programmed into it.******
+
+function: get_player_data
+
+description: takes a player id, scrapes CBS website for that player's data, returns tuple with player id as first element and
+dict of dicts containing all stats for all games player participated in for 2012 season as second element.
+
+inputs: player_id: int
+
+outputs: tuple. First element is player id. Second element is dict of dicts. First dict is keyed on game number. Inner dicts are
+keyed on statistic names.
+
+
+def get_player_data(player_tuple):
+    player_id = player_tuple[0]
+    name = player_tuple[1]
+    
+    html = requests.get('http://fantasynews.cbssports.com/fantasybasketball/players/player/gamelogs/2012/%d' % player_id).text
+    dom = web.Element(html)
+    data = {}
+    data_keys = []
+    for i, stats in enumerate(dom.by_class('label')[1]):
+        stat = str(stats)[4:-5]
+        if len(stat) > 0 and i > 1:
+            data_keys.append(stat)
+
+    for each in dom.by_class('data borderTop'):
+        for each2 in each.by_tag('tr'):
+            for i, each3 in enumerate(each2.by_tag('td')):
+                if i not in data.keys():
+                    data[i] = []
+                if each3.content == 'Gamedate':
+                    continue
+                if each3.content == 'Opp':
+                    continue
+                #if i == 1:
+                 #   data[i].append(each3.content[-7:-4])
+                  #  continue
+                data[i].append(each3.content)
+    
+    return data
+"""
+
+# <markdowncell>
+
+# After getting the player IDs from CBS Sports, we'll need a function that will use a single ID to grab a single player's data.
+
+# <codecell>
+
+"""
+function: get_player_data
+
+description: takes a player id, scrapes CBS website for that player's data, returns tuple with stat headings (FG, FGA, MIN, etc)
+as first element and a dict containing all stats for all games player participated in for 2012-2013 season as second element.
+Entries in the dict are keyed on the date of the game.
+
+inputs: player_id: int
+
+outputs: tuple. First element is list of of stat headings. Second element is a dict. Dict is keyed on game date and values are lists 
+of the games' stats.
+"""
+
+def get_player_data(player_id):
+    # The following while loop is used to handle server timeouts. Occasionally the CBS server would not return information
+    # and the program would exceed the max allowable retries. The while loop limits request tries to 3 and then returns None
+    # and moves on if it hasn't gotten information from the server.
+    
+    attempt = 0
+    
+    while attempt <= 2: 
+        try:
+            html = requests.get('http://fantasynews.cbssports.com/fantasybasketball/players/player/gamelogs/2012/%d' % player_id).text
+            break
+            
+        except:
+            attempt += 1
+    
+    if attempt == 3:
+        return None
+    
+    dom = web.Element(html)
+    data = {}
+    headings = []
+    
+    # This if statement checks to see if any usable data at all was returned. Some players with IDs did not play for the entirety
+    # of the season and thus had no data.
+    if len(dom.by_class('label')) == 0:
+        return None
+    
+    # This loop produces the headings for the individual stats. (i.e. FG, FGA, MIN, etc.)
+    for i, stat_headings in enumerate(dom.by_class('label')[1]):
+        # We need to knock off the html tags.
+        heading = str(stat_headings)[4:-5]
+        if len(heading) > 0 and i > 1:
+            headings.append(heading)
+    
+    # This loop grabs the data for each game and puts it in a dict keyed on the date of each game
+    for element in dom.by_class('data borderTop'):
+        for row in element.by_tag('tr'):
+            for i, each in enumerate(row.by_tag('td')):
+                if i == 0:
+                    #the key here is the date of the game
+                    key = str(each.content)
+                    data[key] = []
+                else:
+                    data[key].append(each.content)
+                    
+    return (headings, data)
+
+# <headingcell level=3>
+
+# Cleaning the Data
+
+# <markdowncell>
+
+# The following function cleans an individual player's data grabbed above from the CBS website. It is important that we get this intermediate step right before moving on to get *all* player data.
+
+# <codecell>
+
+"""
+Function: clean_data
+
+Description: takes a data set from get_player_data and cleans it.
+
+Inputs: dict containing player data keyed on date
+
+Outpurs: cleaned dict
+"""
+
+def clean_data(headings, data):
+    #Need to remove all non-dates from the data dict keys.
+    for key in data.keys():
+        if key[-1].isdigit() == False:
+            del(data[key])
+        
+    #Need to get rid of link HTML.
+    for date in data.keys():
+        if len(data[date][0]) < 61:
+            temp = data[date][0][-6:-4]
+            data[date].remove(data[date][0])
+            data[date].insert(0, temp)
+        else:
+            temp = data[date][0][-7:-4]
+            data[date].remove(data[date][0])
+            data[date].insert(0, temp)
+            
+    #If the player didn't play in a game add None for each stat missing.
+    for date in data.keys():
+        num_of_headings = len(headings[2:])
+        if 'Did Not Play ' in data[date]:
+            data[date].remove(data[date][2])
+            for i in range(num_of_headings):
+                data[date].append(None)
+    return data
+
+# <markdowncell>
+
+# Next we run a quick test to make sure we have a clean-looking version of the data we are supposed to have at this point.
+
+# <codecell>
+
+ids = get_player_ids()
+test_id, test_name, test_position = ids[15]
+headings, raw_data = get_player_data(test_id)
+data = clean_data(headings, raw_data)
+
+# <codecell>
+
+#these keys should be stat headings
+print headings
+
+#regular game with team abbr. 3 letters long
+print data['10/30']
+
+#team abbr. only 2 letters long, not 3
+print data['11/29']
+
+#player did not play in game
+print data['04/05']
+
+#team abbr. contains @ symbol
+print data['11/14']
+
+# <headingcell level=3>
+
+# Packaging Data
+
+# <markdowncell>
+
+# Everything looks good so we can move on to package the data into a dataframe.
+
+# <codecell>
+
+"""
+Function: make_dataframe
+
+Inputs: individual player's data for the 2012 season.
+
+Outputs: dataframe with all data for single player
+"""
+
+def make_dataframe(player_id, player_name, player_position, headings, data_dict):
+    #this master list is to collect all stats into a single list. This makes converting to a dataframe much easier.
+    master_list = []
+    
+    #we populate the master list with the stats
+    for key in data_dict.keys():
+        master_list.append(data_dict[key])
+    
+    #now we create the dataframe using the master_list to populate values. We index here on the data_dict keys since they are the 
+    #dates of the actual games. Columns are labeled by the headings passed earlier. 
+    df = pd.DataFrame(master_list, index=data_dict.keys(), columns = headings)
+    
+    #we need to manually enter in needed information not available from the screen scraping.
+    df['Name'] = player_name
+    df['Id'] = player_id
+    df['Position'] = player_position
+    df['Date'] = data_dict.keys()
+    
+    #now to rearrange the columns into a more logical order
+    #start off with the columns we added manually...
+    col_names = ['Id', 'Name', 'Date', 'Position']
+    
+    #...and add the columns we scraped from the CBS website
+    for heading in headings:
+        col_names.append(heading)
+        
+    df = df[col_names]
+    
+    return df
+
+# <markdowncell>
+
+# Now that all our code for getting the data is ready, let's test it on our test_id.
+
+# <codecell>
+
+df = make_dataframe(test_id, test_name, test_position, headings, data)
+df.head()
+
+# <headingcell level=3>
+
+# Downloading All Data
+
+# <markdowncell>
+
+# Finally! All the functions up to now seem to work as they should and the data we're getting looks clean and usable. Let's scale the data-gathering up and get *all* NBA player data for the entire 2012-2013 season.
+
+# <codecell>
+
+"""
+Function: get_all_player_data
+
+Description: gets all player data
+
+Inputs: None
+
+Outputs: Dataframe of all players and their data
+"""
+
+def get_all_player_data():
+    #Part of this solution is from the HW3 solution, problem 1.2
+    
+    #First we grab all player ids.
+    ids = get_player_ids()
+    dfs = []
+    
+    #Next we iterate through the ids, grabbing everyone's data, and appending it to the dfs list it.
+    for player_id in ids:
+        
+        #unpack the ids
+        pid, player_name, player_position = player_id
+        
+        #get the player's data, checking to make sure it's actually there
+        player_data = get_player_data(pid)
+        if player_data != None:
+            headings, raw_data = player_data
+        else:
+            continue
+        
+        #Now we clean that data...
+        data = clean_data(headings, raw_data)
+        
+        #...and package it into a nice dataframe
+        player_df = make_dataframe(pid, player_name, player_position, headings, data)
+        dfs.append(player_df)
+    
+    all_player_df = pd.concat(dfs, ignore_index=True)
+    
+    return all_player_df
+
+# <markdowncell>
+
+# The code below gets all the players' data. The last two lines can be toggled so you don't have to download the CBS data every time.
+
+# <codecell>
+
+#all_data = get_all_player_data()
+#all_data.to_csv('all_data.csv', index=False)
+all_data = pd.read_csv('all_data.csv')
+
+# <markdowncell>
+
+# Now we calculate some basic statistics to make the dataframe easier to handle, and we re-organize the dataframe for visual purposes.
+
+# <codecell>
+
+all_data['FG%'] = all_data['FG']/all_data['FGA']
+all_data['FT%'] = all_data['FT']/all_data['FTA']
+all_data['FG3%'] = all_data['FG3']/all_data['FG3A']
+cols = ['Id', 'Name', 'Date', 'Position', 'Opp', 'Result', 'MIN', 'FG', 'FGA', 'FG%', 'FG3', 'FG3A', 'FG3%', 'FT', 'FTA', 
+        'FT%', 'OFF', 'REB', 'TREB', 'A', 'STL', 'BLK', 'TO', 'PF', 'PTS']
+all_data = all_data[cols]
+
+# <markdowncell>
+
+# How does Lebron James' data look?  (He was an All-Star, as well as the NBA's Most Valuable Player, in both 2012 and 2013.)
+
+# <codecell>
+
+all_data[all_data['Name'] == 'LeBron James'].head()
+
+# <markdowncell>
+
+# To trim away uninformative (for our purposes, at least) data, let's get rid of all the rows with empty MIN (minutes played) numbers.  These are rows where the player did not enter the game.  (If a player entered the game but attempted 0 field goals, the row is kept.)
+
+# <codecell>
+
+all_data = all_data[~all_data['MIN'].isnull()]
+
+# <markdowncell>
+
+# Finally, we split the data into regular and playoff data using the dates on which the regular season began and ended.  For the main statistical modeling portion of this project, we are only concerned with the regular season.
+
+# <codecell>
+
+#first we convert the dates to datetimes
+all_data['Date'] = pd.to_datetime(all_data['Date'])
+
+# <codecell>
+
+#next, we'll filter out the playoffs
+
+#the first mask grabs dates from October 2012 (it's coded as 2013 for convenience and produces correct results.)
+mask = (all_data['Date'] > '2013-10-01') | (all_data['Date'] < '2013-04-20')
+
+#this second masks grabs only the dates for playoff games
+playoff_mask = (all_data['Date'] < '2013-10-01') & (all_data['Date'] > '2013-04-20')
+
+#rseason means 'regular season'
+rseason = all_data[mask]
+
+#pseason means 'playoff season'
+pseason = all_data[playoff_mask]
+
+# <codecell>
+
+rseason.head()
+
+# <codecell>
+
+pseason.head()
+
+# <markdowncell>
+
+# Excellent! We have all the data, it is clean and usable, and split into regular and playoff season subsets.
+
+# <headingcell level=2>
+
+# Exploratory Data Analysis
+
+# <markdowncell>
+
+# Now that we've gathered and cleaned data, let's explore it! We're curious to see how "explainable" vs. "random/disorganized" the data look.
+
+# <headingcell level=4>
+
+# Distributions of Field Goal % for All Players
+
+# <markdowncell>
+
+# First, let's look at the average field goal percentage for all players. We'll start by creating groupby objects so we aggregate all scores for the season for each player.
+
+# <codecell>
+
+#Notice that we group by both Id and Name. This allows us to retain the name in the groupby while using the unique Ids to aggregate 
+#by. We group by both mean and sum to make available both measures when needed later.
+id_groupby = all_data.groupby(['Id', 'Name'], as_index = False).mean()
+id_groupby_sum = all_data.groupby(['Id', 'Name']).sum()
+rseason_id_groupby = rseason.groupby(['Id', 'Name']).mean()
+rseason_id_groupby_sum = rseason.groupby(['Id', 'Name']).sum()
+
+# <markdowncell>
+
+# Now that the data is grouped by Player ID, let's take a look to see what the data looks like.
+
+# <codecell>
+
+id_groupby.head()
+
+# <markdowncell>
+
+# This looks great - just from these few rows, we can already see several data points that confirm known facts.
+# 
+# 1. Ray Allen, one of the NBA's best 3-point shooters, has a high FG3%.
+# 2. Kobe Bryant, the longtime workhorse for the Los Angeles Lakers, has an extremely high average number of minutes played (MIN) and average number of points (PTS).
+# 3. Marcus Camby, a defensive-minded center, shoots free throws poorly (FT%) but does fairly well in average blocks (BLK).
+# 4. Tim Duncan, a great player nicknamed the Big Fundamental, has high averages for points (PTS), rebounds (TREB), and blocks (BLK).
+# 
+# Let's visualize the data by plotting some charts.
+
+# <codecell>
+
+fg_all = id_groupby.copy()
+
+#Need to make sure there are only people who actually attempted field goals included
+fg_all = fg_all[~fg_all['FG%'].isnull()]
+
+plt.hist(fg_all['FG%'], bins = 50)
+
+#plot a mean and median line to look for possible skewing
+plt.axvline(fg_all['FG%'].median(), color = 'b', label = 'Median')
+plt.axvline(fg_all['FG%'].mean(), color = 'r', label = 'Mean')
+plt.title('FG% All Players Regular Season Plus Postseason')
+plt.xlabel('Field Goal %')
+plt.legend(loc = 1)
+remove_border()
+plt.show()
+
+print "Median is: ", fg_all['FG%'].median()
+print "Mean is: ", fg_all['FG%'].mean()
+print "Variance is: ", fg_all['FG%'].var()
+
+# <markdowncell>
+
+# The shape of the above distribution is surprisingly well-behaved. It is unimodal and relatively symmetric, resembling a Normal (Gaussian) distribution.  A handful of players shot 0% and 100% - they likely attempted only a few shots (otherwise, they'd be extremely bad or extremely great shooters!).
+# 
+# Postseason play is considered slightly different from regular season play.  Not only are there fewer teams (meaning fewer players), but also, player rotations are shortened and the pace of play is often slower.  For instance, a team that regularly plays 10-11 players during regular season games may only play 8 during the postseason.
+# 
+# What does the distribution of FG% look like for just the regular season?
+
+# <codecell>
+
+rseason_id_groupby = rseason.groupby(['Id', 'Name']).mean()
+#Need to make sure there are only people who actually attempted field goals included
+rseason_id_groupby = rseason_id_groupby[~rseason_id_groupby['FG%'].isnull()]
+
+plt.hist(rseason_id_groupby['FG%'], bins = 50)
+
+#plot a mean and median line to look for possible skewing
+plt.axvline(rseason_id_groupby['FG%'].median(), color = 'b', label = 'Median')
+plt.axvline(rseason_id_groupby['FG%'].mean(), color = 'r', label = 'Mean')
+plt.title('FG% All Players Regular Season')
+plt.xlabel('Field Goal %')
+plt.legend(loc = 1)
+remove_border()
+plt.show()
+
+print "Median is: ", rseason_id_groupby['FG%'].median()
+print "Mean is: ", rseason_id_groupby['FG%'].mean()
+print "Variance is: ", rseason_id_groupby['FG%'].var()
+
+# <markdowncell>
+
+# Again, the distribution seems well-behaved: unimodal and symmetric, and approximately Normal.  This is not suprising, since the regular season comprised the bulk of the first histogram (regular season plus postseason).
+# 
+# Lastly, let's take a look at the playoffs.
+
+# <codecell>
+
+pseason_id_groupby = pseason.groupby(['Id', 'Name']).mean()
+#Need to make sure there are only people who actually attempted field goals included
+pseason_id_groupby = pseason_id_groupby[~pseason_id_groupby['FG%'].isnull()]
+
+plt.hist(pseason_id_groupby['FG%'], bins = 50)
+
+#plot a mean and median line to look for possible skewing
+plt.axvline(pseason_id_groupby['FG%'].median(), color = 'b', label = 'Median')
+plt.axvline(pseason_id_groupby['FG%'].mean(), color = 'r', label = 'Mean')
+plt.title('FG% All Players Postseason')
+plt.xlabel('Field Goal %')
+plt.legend(loc = 1)
+remove_border()
+plt.show()
+
+print "Median is: ", pseason_id_groupby['FG%'].median()
+print "Mean is: ", pseason_id_groupby['FG%'].mean()
+print "Variance is: ", pseason_id_groupby['FG%'].var()
+
+# <markdowncell>
+
+# This distribution still seems fairly unimodal and symmetric, but it is much "patchier." There is considerably more variance in the aggregate FG% scores and as expected, the histogram is less smooth (because of smaller sample size - this dataset only includes players who played in the playoffs.  Usually less than half of NBA players will play in the playoffs in a given year). There also seems to be some some slight skew right as the mean is pulled away from the median toward 0. This makes sense as there are a fairly large number of players with postseason FG percentages of 0.  Since there are fewer games and the pace of play is often slower in the playoffs, FG% values become more erratic because of the small sample sizes.
+
+# <headingcell level=4>
+
+# Distributions of Field Goal % for Top NBA Players
+
+# <markdowncell>
+
+# Let's take a look at the top 5 players according to season average FG%.
+
+# <codecell>
+
+fg_sorted = id_groupby[['Name','FG%']].copy()
+fg_sorted.sort(columns = 'FG%', ascending=False, inplace = True)
+fg_sorted = fg_sorted[~fg_sorted['FG%'].isnull()]
+fg_sorted.head()
+
+# <markdowncell>
+
+# Ever heard of these guys?  (As pretty diligent NBA fans, we've only heard of two of the five.)  If these players are shooting so well, you'd think they'd be more well known.  Why isn't that the case?
+# 
+# Let's look at their FG% distributions across games.
+
+# <codecell>
+
+top_fg = list(fg_sorted['Name'].head(5))
+
+# <codecell>
+
+for i, name in enumerate(top_fg):
+    temp = all_data[all_data['Name'] == name]['FG%']
+    temp = temp[~temp.isnull()]
+    plt.figure(i)
+    plt.hist(temp)
+    plt.title(name)
+    remove_border()
+
+# <markdowncell>
+
+# That's why - these players did not play in many games and/or did not attempt many field goals.  Subsequently, these histograms don't make much sense and definitely don't look prety. These players tend to be centers who take high-percentage shots (e.g., dunks and layups near the basket).  These particular few got lucky by making all or most of the few shots they took.
+# 
+# Let's instead use the top 5 players ranked last year according to ESPN: LeBron James, Kevin Durant, Dwight Howard, Chris Paul, and Derrick Rose. Source: http://espn.go.com/nba/story/_/id/8429260/2012-nba-player-rankings-no-5
+
+# <codecell>
+
+"""
+The code below intends to plot the FG% distributions by game for each of the top 5 players (as ranked by ESPN).
+However, it spits out a ValueError (not because of code problems - the reason is explained below).
+
+top_players = ['LeBron James', 'Kevin Durant', 'Dwight Howard', 'Chris Paul', 'Derrick Rose']
+for i, name in enumerate(top_players):
+    plt.figure(i)
+    plt.hist(all_data[all_data['Name'] == name]['FG%'])
+    plt.title(name)
+    remove_border()"""
+
+# <markdowncell>
+
+# The ValueError results from empty data for Derrick Rose, point guard for the Chicago Bulls.
+
+# <codecell>
+
+print all_data[all_data['Name'] == 'Derrick Rose']
+
+# <markdowncell>
+
+# Data for Derrick Rose's 2013 season are unavailable through CBS Sports because he sat out the entire season recovering from an ACL (knee ligament) injury that he suffered in the 2012 playoffs. (In fact, he recently injured his other knee and will miss the rest of the 2014 season. Talk about bad luck!)
+# 
+# Let's substitute in ESPN's No. 6, Kobe Bryant.
+
+# <codecell>
+
+top_players = ['LeBron James', 'Kevin Durant', 'Dwight Howard', 'Chris Paul', 'Kobe Bryant']
+for i, name in enumerate(top_players):
+    plt.figure(i)
+    plt.hist(all_data[all_data['Name'] == name]['FG%'],bins=20,range=(0,1))
+    plt.title(name)
+    remove_border()
+
+# <markdowncell>
+
+# All these players exhibit relatively Normal-shaped distributions for their FG%s.  They are all unimodal, and each player has a different central location.  This suggests that having player-specific location parameters and modeling game-by-game field goals made using player-specific Binomial distributions is reasonable.
+# 
+# The histograms also tell us that players with higher numbers of field goal attempts tend to have more "regular" behavior in terms of FG%.
+
+# <headingcell level=4>
+
+# Minutes Played Per Game
+
+# <markdowncell>
+
+# Let's explore players' number of game minutes played.  Below are two different ways for calculating players' average number of minutes played per game.  The first method sums up the total minutes played and then divides by 82, the number of games in an NBA season.  The second method averages the number of minutes played over the players' rows in the dataset.
+
+# <codecell>
+
+avgmin1 = (rseason_id_groupby_sum['MIN']/82)[rseason_id_groupby_sum['FGA']!=0]
+avgmin2 = rseason_id_groupby['MIN'][rseason_id_groupby['FGA']!=0]
+
+fig1=plt.figure()
+plt.hist(avgmin1,bins=20,range=(0,40))
+axis1=fig1.gca()
+axis1.set_title('Average Minutes per Game - Measure 1')
+axis1.set_xlabel('Number of Minutes')
+remove_border()
+
+fig2=plt.figure()
+plt.hist(avgmin2,bins=20,range=(0,40),color=dark2_colors[1])
+axis2=fig2.gca()
+axis2.set_title('Average Minutes per Game - Measure 2')
+axis2.set_xlabel('Number of Minutes')
+remove_border()
+
+# <markdowncell>
+
+# As we see from the plot, these two measures of "average" minutes are quite different.  The distribution of measure 1 is skewed right, while the distribution of measure 2 is more symmetric (kind of).  Measure 2 values seem to suggest that players are playing larger numbers of minutes.  How can we explain this difference?
+# 
+# The answer is that the first average is an unconditional average number of minutes over all 82 games in the season, while the second average is a conditional average: the average number of minutes in a game conditional on the fact that the player actually played in a particular game.  The two averages are equivalent if a player plays in all 82 games.  In fact, measure 2 will always be greater than or equal to measure 1, assuming an 82-game schedule (excluding playoff games).
+# 
+# We can see that in the scatterplot below.
+
+# <codecell>
+
+fig3=plt.figure()
+plt.scatter(avgmin1,avgmin2)
+plt.plot([0,40],[0,40])
+axis3=fig3.gca()
+axis3.set_xlim(0,40)
+axis3.set_ylim(0,40)
+axis3.set_title('Average Minutes per Game - Measure 1 vs. Measure 2')
+axis3.set_xlabel('Measure 1')
+axis3.set_ylabel('Measure 2')
+remove_border()
+
+# <markdowncell>
+
+# We know that equality (or near-equality) is rarely the case; players may get injured and sit out a few games, older players may sit out the second of back-to-back games, and star players may sit out the last few games of the season if playoff positioning has been locked.  On the other hand, end-of-the-bench players rarely play, but when they do, they may get a significant number of minutes.
+# 
+# In the scatterplot, we see only small proportion of players essentially on the 45-degree line.  Those players are extremely durable and play consistently (they play in every game or nearly every game).
+# 
+# Let's check measure 1 and measure 2 values for a couple players on either side of the spectrum.
+
+# <codecell>
+
+avgmin1.head()
+
+# <codecell>
+
+avgmin2.head()
+
+# <codecell>
+
+avgmin1 = avgmin1.reset_index()
+avgmin2 = avgmin2.reset_index()
+
+# <codecell>
+
+print "Measure 1: \n", avgmin1[avgmin1['Name'] == 'Andre Iguodala'][['Name', 'MIN']], "\n"
+print "Measure 2: \n", avgmin2[avgmin2['Name'] == 'Andre Iguodala'][['Name', 'MIN']], "\n"
+
+print "Measure 1: \n", avgmin1[avgmin1['Name'] == 'LeBron James'][['Name', 'MIN']], "\n"
+print "Measure 2: \n", avgmin2[avgmin2['Name'] == 'LeBron James'][['Name', 'MIN']], "\n"
+
+print "Measure 1: \n", avgmin1[avgmin1['Name'] == 'Tim Duncan'][['Name', 'MIN']], "\n"
+print "Measure 2: \n", avgmin2[avgmin2['Name'] == 'Tim Duncan'][['Name', 'MIN']], "\n"
+
+print "Measure 1: \n", avgmin1[avgmin1['Name'] == 'Julyan Stone'][['Name','MIN']], "\n"
+print "Measure 2: \n", avgmin2[avgmin2['Name'] == 'Julyan Stone'][['Name','MIN']], "\n"
+
+print "Measure 1: \n", avgmin1[avgmin1['Name'] == 'Eddy Curry'][['Name','MIN']], "\n"
+print "Measure 2: \n", avgmin2[avgmin2['Name'] == 'Eddy Curry'][['Name','MIN']], "\n"
+
+# <markdowncell>
+
+# Andre Iguodala's measures are nearly identical, meaning that he played in almost every game last season.  Lebron James' measures are also quite close, though not as close as Iguodala's, as James sat out a few games at the end of the regular season.
+# 
+# Tim Duncan's measures are different by 5 minutes per game, since he was often rested because of his old age.
+# 
+# Lastly, we have Julyan Stone and Eddy Curry, two of our top five FG shooters from earlier.  Their two measures of average minutes played are completely different, as they only participated in a few games last season.  Conditional on entering the game, Stone averaged nearly seven minutes of playing time, while Curry logged over 12 minutes (one whole quarter).  But unconditionally, both of them averaged less than 30 seconds per game!
+
+# <markdowncell>
+
+# Another interesting aspect of data to look at is usage rates, i.e., how often players shoot the ball when they're on the court.  To examine usage rate, let's look at FGA per minute played.
+
+# <codecell>
+
+FGAmin = id_groupby_sum['FGA']/id_groupby_sum['MIN']
+FGAmin = FGAmin[~FGAmin.isnull()]
+print "The mean number of field goal attemps per minute played is", FGAmin.mean(), "\n"
+plt.hist(FGAmin, bins=20)
+remove_border()
+plt.show()
+
+# <markdowncell>
+
+# On average, players shoot 0.32 shots per minute played, or about one shot every 3 minutes.
+
+# <codecell>
+
+FGAmin.sort(ascending = False)
+FGAmin
+
+# <markdowncell>
+
+# In general, the distribution of FGA per minute played is surprisingly well-behaved.  It seems to be approximately unimodal and symmetric about 0.33.
+# 
+# Carmelo Anthony is widely regarded as a "ball-hog" - he attempts a shot every 90 seconds.  But he is outdone by Darius Johnson-Odom!  (Anthony is also regarded as one of the best scorers in the NBA; Johnson-Odom is not even close to be considered as such.)
+# 
+# Interestingly, apart from Anthony and Russell Westbrook, many of the top-usage players are relative unknowns.  Their high FGA/MIN ratios may be explained from low MIN values, whereas Anthony's and Westbrook's are surely explained from high FGA values.
+
+# <headingcell level=4>
+
+# Restricting the Data to Early in the Season
+
+# <markdowncell>
+
+# Our primary research question pertains to whether or not one can make accurate naive predictions for the entire season in the first month of the season, and whether or not we can improve on those predictions using statistical modeling. The following code splits the data into data that comes before the end of November (all data before December 1) and data after the end of November.
+
+# <codecell>
+
+#this restricts the 2012-2013 data to pre-December data
+mask = (all_data['Date'] > '2013-10-01') & (all_data['Date'] <= '2013-11-30')
+
+pre_DEC = all_data[mask]
+id_groupby_pre_DEC = pre_DEC.groupby(['Id', 'Name'], as_index = False).sum()
+
+#here we drop columns that don't make sense because of the "sum" groupby above
+id_groupby_pre_DEC = id_groupby_pre_DEC.drop(['FG%', 'FG3%', 'FT%'], axis = 1)
+
+# <markdowncell>
+
+# Later on, we use R/RStan for Markov Chain Monte Carlo sampling machinery.  Now we'll export the pre-December data for use in R.
+
+# <codecell>
+
+#id_groupby_pre_DEC.to_csv('aggregated_pre_DEC_12_13.csv', index = False)
+#pre_DEC.to_csv('pre_DEC_12_13.csv', index = False)
+
+# <markdowncell>
+
+# Now to get the remainder of the season so we can check our predictions.
+
+# <codecell>
+
+#this generates the remainder of the 2012-2013 data
+mask = (all_data['Date'] < '2013-04-20') | (all_data['Date'] > '2013-11-30')
+
+post_NOV = all_data[mask]
+id_groupby_post_NOV = post_NOV.groupby(['Id', 'Name'], as_index = False).sum()
+
+#here we drop columns that don't make sense because of the "sum" groupby above
+id_groupby_post_NOV = id_groupby_post_NOV.drop(['FG%', 'FG3%', 'FT%'], axis = 1)
+
+# <markdowncell>
+
+# And we export that data for R as well.
+
+# <codecell>
+
+#id_groupby_post_NOV.to_csv('aggregated_post_NOV_12_13.csv', index = False)
+#post_NOV.to_csv('post_NOV_12_13.csv', index = False)
+
+# <markdowncell>
+
+# Before jumping into the model, let's take a quick peek at the pre-December and post-December data's histograms.
+
+# <codecell>
+
+pre_dec_groupby = pre_DEC.groupby(['Id', 'Name'], as_index = False).mean()
+
+#Need to make sure there are only people who actually attempted field goals included
+pre_dec_groupby = pre_dec_groupby[~pre_dec_groupby['FG%'].isnull()]
+
+plt.hist(pre_dec_groupby['FG%'], bins = 50)
+
+#plot a mean and median line to look for possible skewing
+plt.axvline(pre_dec_groupby['FG%'].median(), color = 'b', label = 'Median')
+plt.axvline(pre_dec_groupby['FG%'].mean(), color = 'r', label = 'Mean')
+plt.title('FG% All Players Pre-December')
+plt.xlabel('Field Goal %')
+plt.legend(loc = 1)
+remove_border()
+plt.show()
+
+print "Median is: ", pre_dec_groupby['FG%'].median()
+print "Mean is: ", pre_dec_groupby['FG%'].mean()
+print "Variance is: ", pre_dec_groupby['FG%'].var()
+
+# <markdowncell>
+
+# Perhaps surprisingly, even only after a month, the distribution of field goal percentages seems fairly well-behaved resembling a Normal (Gaussian) shape.  It is relatively unimodal and symmetric, but there is the patchiness we would expect from the relatively small sample size available from the first month or so of the season (for example, many players shooting 0%).
+
+# <codecell>
+
+post_nov_groupby = post_NOV.groupby(['Id', 'Name'], as_index = False).mean()
+
+#Need to make sure there are only people who actually attempted field goals included
+post_nov_groupby = post_nov_groupby[~post_nov_groupby['FG%'].isnull()]
+
+plt.hist(post_nov_groupby['FG%'], bins = 50)
+
+#plot a mean and median line to look for possible skewing
+plt.axvline(post_nov_groupby['FG%'].median(), color = 'b', label = 'Median')
+plt.axvline(post_nov_groupby['FG%'].mean(), color = 'r', label = 'Mean')
+plt.title('FG% All Players Post-November')
+plt.xlabel('Field Goal %')
+plt.legend(loc = 1)
+remove_border()
+plt.show()
+
+print "Median is: ", post_nov_groupby['FG%'].median()
+print "Mean is: ", post_nov_groupby['FG%'].mean()
+print "Variance is: ", post_nov_groupby['FG%'].var()
+
+# <markdowncell>
+
+# There are no surprises here. The distribution is unimodal and normal (Gaussian) in shape.
+
+# <headingcell level=2>
+
+# Building the Model
+
+# <markdowncell>
+
+# As stated in the introduction, we want to evaluate whether or not one can make accurate naive predictions for the entire season in the first 33 days of the season (pre-December 1), and whether or not we can improve on those predictions using statistical modeling. If we can improve those predictions, by how much?
+# 
+# We will use pre-December 1 data, in combination with our models, to predict the players' overall shooting percentages for the remainder of the season.
+
+# <markdowncell>
+
+# Let $M$ denote the number of NBA players (for our dataset of the 2012-2013 NBA season, $M$ is approximately 460).
+# 
+# For each player $i$ ($i=1,...,M$), let $\theta_i$ denote his true, underlying shooting percentage for the given season.  We can think of $\theta_i$ as the hypothetical shooting percentage player $i$ would have if the season were repeated many times, and the player took many field goal attempts.
+# 
+# Unfortunately, we do not observe the $\theta_i$'s; we only observe noisy data points that depend on them through some generative process.  For our purposes, the data points we observe are the number of field goal made (we also observe the number of field goals attempted) in each game the players participated in before the All-Star break.
+# 
+# Let the observed data point $y_{ij}$ represent the number of field goals made by player $i$ in game $j$.  For simplicity, we treat $n_{ij}$, the number of field goals attempted by player $i$ in game $j$, as fixed.  (Modeling $y_{ij}$ and $n_{ij}$ would require a complicated joint distribution; intuitively, the two would not seem to be independent.  The joint model is left as possible future research.)
+# 
+# Let $K_i$ denote the number of games that player $i$ participated in ($i=1,...,M$).  Conditional on player $i$'s true shooting percentage, $\theta_i$, we model the number of goals made by player $i$ in game $j$ using a Binomial distribution.
+# 
+# $$y_{ij} | \theta_i, n_{ij} \sim Bin(n_{ij}, \theta_i) \mbox{ for } i=1,...,M; j^{(i)}=1,...,K_i$$
+# 
+# By using the Binomial distribution, we assume that each shot the player takes is independent and that the probability of success is constant.  Previous researchers have shown evidence against the "hot hand" theory, lending credibility to our assumptions, but more complicated models with dependence structures and non-constant success probabilities are possible extensions.
+# 
+# By estimating the $\theta_i$'s, we can predict players' overall season shooting percentages, since we believe them to be close to their true shooting percentages.
+# 
+# A natural but possibly naive method for estimating the $\theta_i$'s is to estimate them independently, using only player $i$'s data to estimate $\theta_i$ and using only player $i'$'s data to estimate $\theta_{i'}$.  Our goal is to improve upon the naive estimation method by modeling them together (jointly, in a non-technical sense) using Bayesian hierarchical models.
+# 
+# The conceptual motivation of hierarchical models is that we believe the parameters share common attributes.  In other words, we believe there is information sharing among the parameters; knowing about one player's true shooting percentage should help us learn about another player's true shooting percentage.  Mathematically, we state this idea by modeling the parameters as coming from a common distribution.
+
+# <headingcell level=4>
+
+# Model 1: Empirical Bayes
+
+# <markdowncell>
+
+# We start with a two-level model, where the true shooting percentages of all players come from a common distribution.  Since the $\theta_i$'s are success probabilities, their support is limited to $[0,1]$, and a Beta distribution is a natural choice for a prior.  Conveniently, the Beta distribution is the conjugate prior for Binomial data.
+# 
+# Our prior stipulates that the $\theta_i$'s come from a common Beta distribution, with hyperparameters $\alpha$ and $\beta$.
+# 
+# \begin{align*}
+#     \theta_i|\alpha,\beta &\sim Beta( \alpha, \beta) &&\text{independently for } i=1,...,M\\\\
+#     y_{ij} | \theta_i, n_{ij} &\sim Bin(n_{ij}, \theta_i) &&\text{for } i=1,...,M; j^{(i)}=1,...,K_i
+# \end{align*}
+# 
+# Below is a hierarchical diagram showing the relationships among the parameters and data.
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Tree_model1.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# The density functions associated with the prior and likelihood are:
+# 
+# \begin{align*}
+#     P(\theta_i|\alpha,\beta) &\propto \theta^{\alpha-1}(1-\theta_i)^{\beta-1} 
+#         &&\text{: Prior distribution of true shooting percentage $\theta_i$ of player $i$}\\
+#     P(y_{ij}|\theta_i,n_{ij}) &= \binom{n_{ij}}{y_{ij}}\theta_i^{y_{ij}}(1-\theta_i)^{n_{ij}-y_{ij}} 
+#         && \text{: Probability of player $i$ making $y_{ij}$ field goals out of $n_{ij}$ attempts conditioning on $\theta_i$}\\
+# \end{align*}
+# 
+# Henceforth, we suppress the condition on $n_{ij}$ terms, for notational convenience.  We always assume the $n_{ij}$'s to be fixed.
+# 
+# Since we treat the games independently, our likelihood is:
+# 
+# \begin{align*}
+#     P(\vec{y}_i|\theta_i) &\propto \theta_i^{\sum\limits_{j=1}^{k_i} y_{ij}}(1-\theta_i)^{\sum\limits_{j=1}^{k_i} n_{ij}-\sum\limits_{j=1}^{k_i} y_{ij}}
+#         && \text{: Probability of the observed data for player $i$ conditioning on $\theta_i$}
+# \end{align*}
+# 
+# Deriving the posterior, we have:
+# 
+# \begin{align*}
+#     P(\theta_i|\vec{y}_i,\alpha,\beta) &\propto P(\vec{y}_i|\theta_i)\cdot P(\theta_i|\alpha,\beta)
+#     &&\text{: Posterior distribution of true shooting percentage $\theta_i$ of player $i$} \\
+#     &\propto \theta_i^{\alpha-1+\sum\limits_{j=1}^{k_i} y_{ij}}(1-\theta_i)^{\beta-1+\sum\limits_{j=1}^{k_i} n_{ij}-\sum\limits_{j=1}^{k_i} y_{ij}}\\
+#     P(\vec{\theta}|\vec{y}, \alpha, \beta) &\propto \prod\limits_{i=1}^m \theta_i^{\alpha-1+\sum\limits_{j=1}^{k_i} y_{ij}}(1-\theta_i)^{\beta-1+\sum\limits_{j=1}^{k_i} n_{ij}-\sum\limits_{j=1}^{k_i} y_{ij}}
+#     &&\text{: Joint posterior distribution of true shooting percentage $\vec{\theta}$ of all players}\\
+#     i &\in \{ 1, 2, \dotsb, M \}\\
+#     j^{(i)} &\in \{ 1, 2, \dotsb, k_i \}
+# \end{align*}
+
+# <markdowncell>
+
+# Because of Beta-Binomial conjugacy, we have a nice closed-form solution for the posterior distributions of the $\theta_i$'s, conditional on $\alpha$ and $\beta$.  Thus, we have analytic forms for the posterior means, which we use for prediction.
+# 
+# Namely, the posterior of $\theta_i$ is
+# $$\theta_i|\vec{y}_i,\alpha,\beta \sim Beta(\alpha+\sum_{j=1}^{k_i} y_{ij},\beta+\sum_{j=1}^{k_i} n_{ij}-\sum_{j=1}^{k_i} y_{ij}),$$
+# with mean
+# $$E[\theta_i|\vec{y}_i,\alpha,\beta] = \frac{\alpha+\sum_{j=1}^{k_i} y_{ij}}{\alpha+\beta+\sum_{j=1}^{k_i} n_{ij}}.$$
+# 
+# Since the priors of the $\theta_i$'s are independent and their likelihoods are only informed by data from their respective players, the posteriors of the $\theta_i$'s are independently Beta.
+
+# <markdowncell>
+
+# Importantly, the posterior results above condition on $\alpha$ and $\beta$.  In this first model, we use an Empirical Bayes approach, substituting in reasonable estimated values for $\alpha$ and $\beta$ without adding another level of hierarchy to the model.  Later, we add a third modeling level, with hyperpriors on $\alpha$ and $\beta$.
+# 
+# For simplicity, we use moment matching to estimate of $\alpha$ and $\beta$, i.e., we calculate the sample mean and variance in our data and find estimates of $\alpha$ and $\beta$ that would theoretically give us similar results.  We saw in our exploratory analyses that the distribution of players' shooting percentages (aggregated across games by player) was relatively well-behaved: unimodal and symmetric.  So we don't have to worry too much about moment matching giving us strange results.
+# 
+# Let $\bar{y}$ and $s^2$ be the sample mean and variance of the per-player shooting percentages.  The closed-form solutions for the method-of-moments estimates are known as follows, assuming that $s^2<\bar{y}(1-\bar{y})$:
+# 
+# $$\hat{\alpha}=\bar{y} \left( \frac{\bar{y}(1-\bar{y})}{s^2} -1 \right),$$
+# $$\hat{\beta}=(1-\bar{y}) \left( \frac{\bar{y}(1-\bar{y})}{s^2} -1 \right).$$
+# 
+# In our dataset, $\bar{y}=0.417$ and $s^2=0.019$.  This gives us estimates of $\hat{\alpha}=4.93$ and $\hat{\beta}=6.89$, which we substitute into our prior.
+
+# <headingcell level=5>
+
+# **Computational Considerations**
+
+# <markdowncell>
+
+# As mentioned above, we analytically derived the posterior distributions and the posterior means for the $\theta_i$'s, so calculating predictions is straightforward for this model (e.g., using the posterior means).  However, we also write code in R to obtain posterior draws using RStan, which utilizes Hamiltonian Monte Carlo techniques.  The RStan code and algorithm are not really needed for this first model, but it helps us lay a code framework in later, more complicated models.  We also use it to check that our analytic forms give us similar results.
+# 
+# From the likelihood and posterior written above, we see that the game information is additive, i.e., observing $y_{i1}$ field goals made (FGM) out of $n_{i1}$ field goals attempted (FGA) and $y_{i2}$ FGM out of $n_{i2}$ FGA in two different games is equivalent to observing $y_{i1}+y_{i2}$ FGM out of $n_{i1}+n_{i2}$ FGA in one game.  Thus, for RStan implementation purposes, we use an aggregated dataset that has the total FGM and FGA per player.  The aggregated dataset only has $M$ (around 410) rows, whereas the original dataset has about 4,700, so using the aggregated set helps computational efficiency.
+# 
+# We run implementations on both the full dataset and the aggregated dataset and confirm that they give the same results.
+# 
+# The R code is shown below.
+
+# <rawcell>
+
+# #Bayesian Hierarchical Model 1 (empirical Bayes)
+# 
+# bb_code1 <- '
+#   data{
+# 	int<lower=0> ntotal; #total number of observations
+# 	int<lower=0> nplayers; #number of players
+# 	int<lower=0> playernums[ntotal]; #unique player IDs re-numbered from 1 to nplayers
+# 	int<lower=0> FGA[ntotal]; #field goal attempts
+# 	int<lower=0> FGM[ntotal]; #field goals made
+# 	real<lower=0> alphahat; #empirical Bayes parameter estimate
+# 	real<lower=0> betahat; #empirical Bayes parameter estimate
+#   }
+#   parameters{
+# 	real<lower=0,upper=1> theta[nplayers];
+#   }
+# #  transformed parameters{
+# #	any transformed parameters here
+# #  }
+#   model{
+# 	for(i in 1:nplayers)
+# 		theta[i] ~ beta(alphahat,betahat);
+# 	for(n in 1:ntotal)
+# 		FGM[n] ~ binomial(FGA[n],theta[playernums[n]]);
+#   }
+# '
+# 
+# #Short method (using aggregated dataset, ~410 observations)
+# bb_dat1 <- list(ntotal=nrow(bbdata13),nplayers=nrow(bbdata13),
+# 	playernums=1:nrow(bbdata13),FGA=bbdata13$FGA,FGM=bbdata13$FG,
+# 	alphahat=4.93,betahat=6.89)
+# 
+# fit1=stan(model_code=bb_code1,data=bb_dat1,iter=1000,chains=4)
+# samps1=extract(fit1,permute=TRUE,inc_warmup=FALSE)
+# 
+# #thetas sorted by CBS player ID
+# #theta[,1] corresponds to Ray Allen
+# 
+# plot(samps1$theta[,1],type="l") #check trace plot for good MCMC convergence/exploration
+# c(mean(samps1$theta[,1]),sd(samps1$theta[,1])) #posterior mean and SD
+# quantile(samps1$theta[,1],c(.05,.25,.5,.75,.95)) #posterior quantiles
+# 
+# post_means1=apply(samps1$theta,MARGIN=2,mean)
+# post_medians1=apply(samps1$theta,MARGIN=2,median)
+# 
+# ############################################
+# #Long method (using all ~4,700 observations)
+# 
+# playernums=sapply(1:nrow(bbdata_long),function(k) match(bbdata_long$Id[k],unique(bbdata_long$Id)))
+# 
+# bb_dat_long <- list(ntotal=nrow(bbdata_long),nplayers=max(playernums),
+# 	playernums=playernums,FGA=bbdata_long$FGA,FGM=bbdata_long$FG,
+# 	alphahat=5.77,betahat=6.89)
+# 
+# fitlong=stan(model_code=bb_code1,data=bb_dat_long,iter=1000,chains=4)
+# sampslong=extract(fitlong,permute=TRUE,inc_warmup=FALSE)
+# 
+# c(mean(sampslong$theta[,1]),sd(sampslong$theta[,1])) #posterior mean and SD
+# quantile(sampslong$theta[,1],c(.05,.25,.5,.75,.95)) #posterior quantiles
+
+# <markdowncell>
+
+# Results are discussed later in this process book.
+
+# <headingcell level=4>
+
+# Model 2: Full Bayes
+
+# <markdowncell>
+
+# As a second approach, we will avoid restricting $\alpha$ and $\beta$ to be constants and let them vary through the data.  This is a full Bayes approach.  We call the $\theta_i$'s parameters, so we call $\alpha$ and $\beta$ hyperparameters.  We introduce another level of hierarchy into the model: hyperpriors on $\alpha$ and $\beta$.
+# 
+# Since both $\alpha$ and $\beta$ need to be positive (for a valid Beta distribution), we use Gamma hyperpriors.  Our goal is to make the hyperpriors non-informative, so that we "let the data speak."  For our project, we are not particularly interested in the posterior distributions of $\alpha$ and $\beta$, but since they affect the posterior distributions of the $\theta_i$'s (which we are interested in), we should be careful that our Gamma hyperpriors are not too restrictive.
+# 
+# We iteratively test several hyperpriors and relax them (make them more disperse) until the posteriors of $\alpha$ and $\beta$ are relatively stable.  After testing/relaxing Gamma(1,1), Gamma(2,1), and Gamma(2,0.1), we settle on Gamma(2,0.05) priors.  (The next test, using Gamma(2,0.01) priors, gave similar results.)
+# 
+# Below is a visual representation of Model 2.
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Tree_model2.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# The Model 2 hierarchy is specified below:
+# 
+# \begin{align*}
+#     \alpha, \beta &\sim Gamma(2, 0.05) &&\text{independently}\\\\
+#     \theta_i|\alpha,\beta &\sim Beta( \alpha, \beta) &&\text{independently for } i=1,...,M\\\\
+#     y_{ij} | \theta_i &\sim Bin(n_{ij}, \theta_i) &&\text{for } i=1,...,M; j^{(i)}=1,...,K_i
+# \end{align*}
+# 
+# The density functions associated with the hyperprior are:
+# 
+# \begin{align*}
+#     P(\alpha) &\propto \alpha e^{-0.05\alpha}\\
+#     P(\beta) &\propto \beta e^{-0.05\beta}
+# \end{align*}
+# 
+# We know the conditional posteriors of the $\theta_i$'s, given $\alpha$ and $\beta$, are Beta:
+# 
+# $$P(\theta_i|\vec{y}_i,\alpha,\beta) \propto \theta_i^{\alpha+\sum y_{ij}-1}(1-\theta_i)^{\beta+\sum n_{ij}-\sum y_{ij} - 1}$$
+# 
+# Thus, we have the joint posterior:
+# 
+# \begin{align*}    
+#     P(\theta_i,\alpha,\beta|\vec{y}_i) &\propto P(\alpha,\beta)P(\theta_i|\alpha,\beta)P(\vec{y}_i|\theta_i,\alpha,\beta)\\
+#     &\propto P(\alpha,\beta)P(\theta_i|\vec{y}_i,\alpha,\beta)\\
+#     &\propto \alpha\beta e^{-0.05(\alpha+\beta)}\theta_i^{\alpha+\sum y_{ij}-1}(1-\theta_i)^{\beta+\sum n_{ij}-\sum y_{ij} - 1}\\
+#     P(\vec{\theta},\alpha,\beta|\vec{y}) &\propto \alpha\beta e^{-0.05(\alpha+\beta)}\prod\limits_{i=1}^M \theta_i^{\alpha+\sum\limits_{j=1}^{K_i} y_{ij}-1}(1-\theta_i)^{\beta+\sum\limits_{j=1}^{K_i} n_{ij}-\sum\limits_{j=1}^{K_i} y_{ij} - 1}
+# \end{align*}
+# 
+# We, however, are only concerned about the posterior of $\vec{\theta}$; $\alpha$ and $\beta$ are nuisance parameters.  To obtain the unconditional posterior of $\vec{\theta}|\vec{y}$, we need to integrate out $\alpha$ and $\beta$.
+
+# <markdowncell>
+
+# Instead of analytically solving the double integral, we use RStan, using the code for Model 1 as a basis.  (A strong rationale for setting up RStan code in Model 1, even though we analytically derived the posterior distribution, was so that we could build off of it in later models like the one here.)  The RStan code is shown below.
+
+# <rawcell>
+
+# #Bayesian Hierarchical Model 2 (hyperparameters)
+# bb_code2 <- '
+#   data{
+# 	int<lower=0> nplayers; #number of players (equals number of observations)
+# 	int<lower=0> FGA[nplayers]; #field goal attempts
+# 	int<lower=0> FGM[nplayers]; #field goals made
+#   }
+#   parameters{
+# 	real<lower=0,upper=1> theta[nplayers];
+# 	real<lower=0> alpha;
+# 	real<lower=0> beta;
+#   }
+# #  transformed parameters{
+# #	any transformed parameters here
+# #  }
+#   model{
+# 	alpha ~ gamma(2,.05);
+# 	beta ~ gamma(2,.05);
+# 	for(i in 1:nplayers){
+# 		theta[i] ~ beta(alpha,beta);
+# 		FGM[i] ~ binomial(FGA[i],theta[i]);
+# 	}
+#   }
+# '
+# 
+# bb_dat2 <- list(nplayers=nrow(bbdata13),FGA=bbdata13$FGA,FGM=bbdata13$FG)
+# fit2=stan(model_code=bb_code2,data=bb_dat2,iter=1000,chains=4)
+# samps2=extract(fit2,permute=TRUE,inc_warmup=FALSE)
+# 
+# c(mean(samps2$theta[,1]),sd(samps2$theta[,1])) #posterior mean and SD
+# quantile(samps2$theta[,1],c(.05,.25,.5,.75,.95)) #posterior quantiles
+# 
+# post_means2=apply(samps2$theta,MARGIN=2,mean)
+# post_medians2=apply(samps2$theta,MARGIN=2,median)
+
+# <headingcell level=4>
+
+# Model 3: Full Bayes with Position-Specific Hyperpriors
+
+# <markdowncell>
+
+# In Bayesian hierarchical models, we utilize information from all NBA players to help inform our prediction for any given player.  In Models 1 and 2, we used the same prior for every $\theta_i$, so our model shrunk every prediction toward the same proportion.  (In all hierarchical models, the extent of the shrinkage depends on the prior and the sample size of the observed data.)
+# 
+# However, we might not think it reasonable for every player's shooting percentage to come from the same exact common prior distribution.  Namely, players tend to have different shooting percentages because they take different types of shots.  For instance, centers often shoot close to the basket (e.g., dunks, layups), while point guards often shoot farther away (e.g., jump shots), resulting in varying shooting percentages.
+# 
+# In this third model, we allow separate hyperpriors depending on the players' positions.  We categorize players into 3 categories: point guards ("1": PG), wings ("2": SG, G, SF), and bigs ("3": PF, C).  These categories are not perfect, as some players can play multiple positions, but we think this categorization is reasonable for separating shot types.
+# 
+# Let $C_i$ denote the position category of player $i$.  Below is a visual representation of the Model 3 hierarchy.
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Tree_model3.png" width=1200>
+# </div>
+
+# <markdowncell>
+
+# The Model 3 hierarchy is specified below:
+# 
+# \begin{align*}
+#     \alpha_1,\alpha_2,\alpha_3 &\sim Gamma(2, 0.05) &&\text{independently}\\\\
+#     \beta_2,\beta_2,\beta_3 &\sim Gamma(2, 0.05) &&\text{independently}\\\\
+#     \theta_i|C_i,\alpha,\beta &\sim Beta( \alpha_{C_i}, \beta_{C_i}) &&\text{independently for } i=1,...,M\\\\
+#     y_{ij} | \theta_i &\sim Bin(n_{ij}, \theta_i) &&\text{for } i=1,...,M; j^{(i)}=1,...,K_i
+# \end{align*}
+# 
+# The density functions, conditional posteriors, and joint posterior are similar to Model 2, except that $\alpha_1$ and $\beta_1$ are only informed by data from point guards, $\alpha_2$ and $\beta_2$ are only informed by data from wings, and $\alpha_3$ and $\beta_3$ are only informed by data from bigs.  We omit the mathematics here.
+# 
+# A further model, which we do not explore in this project, includes a fourth level of hierarchy, with hyper-hyperpriors on the $\alpha_c$'s and $\beta_c$'s ($c=1,2,3$).  As an example of its implications, this model would allow $\alpha_1$ and $\beta_1$ to be strongly informed by point guards but also be somewhat influenced by non-point guards through the fourth level.
+# 
+# In our Model 3, the $\alpha_c$'s and $\beta_c$'s ($c=1,2,3$) are nuisance parameters because we are only concerned about the posterior of $\vec{\theta}$.  To obtain the unconditional posterior of $\vec{\theta}|\vec{y}$, we need to integrate them out.
+# 
+# We extend our RStan code yet again, this time by specifying position-specific hyperpriors.
+
+# <rawcell>
+
+# #Bayesian Hierarchical Model 3 (position-specific priors)
+# bb_code3 <- '
+#   data{
+# 	int<lower=0> nplayers; #number of players (equals number of observations)
+# 	int<lower=0> npositions; #number of positions
+# 	int<lower=0> positioncat[nplayers]; #position category
+# 	int<lower=0> FGA[nplayers]; #field goal attempts
+# 	int<lower=0> FGM[nplayers]; #field goals made
+#   }
+#   parameters{
+# 	real<lower=0,upper=1> theta[nplayers];
+# 	real<lower=0> alpha[npositions];
+# 	real<lower=0> beta[npositions];
+#   }
+# #  transformed parameters{
+# #	any transformed parameters here
+# #  }
+#   model{
+# 	for(pos in 1:npositions){
+# 		alpha[pos] ~ gamma(2,.05);
+# 		beta[pos] ~ gamma(2,.05);
+# 	}
+# 	for(i in 1:nplayers){
+# 		theta[i] ~ beta(alpha[positioncat[i]],beta[positioncat[i]]);
+# 		FGM[i] ~ binomial(FGA[i],theta[i]);
+# 	}
+#   }
+# '
+# 
+# #position categories (1 if point guard, 2 if wing, 3 if big)
+# positioncat=1*(bbdata13$Position=="PG")+
+# 	2*(bbdata13$Position %in% c("SG","G","SF"))+
+# 	3*(bbdata13$Position %in% c("PF","F","C"))
+# 
+# bb_dat3 <- list(nplayers=nrow(bbdata13),npositions=length(unique(positioncat)),
+# 	positioncat=positioncat,FGA=bbdata13$FGA,FGM=bbdata13$FG)
+# 
+# fit3=stan(model_code=bb_code3,data=bb_dat3,iter=1000,chains=4)
+# 
+# samps3=extract(fit3,permute=TRUE,inc_warmup=FALSE)
+# c(mean(samps3$theta[,1]),sd(samps3$theta[,1])) #posterior mean and SD
+# quantile(samps3$theta[,1],c(.05,.25,.5,.75,.95)) #posterior quantiles
+# 
+# post_means3=apply(samps3$theta,MARGIN=2,mean)
+# post_medians3=apply(samps3$theta,MARGIN=2,median)
+
+# <headingcell level=3>
+
+# Results for the 2012-2013 Season
+
+# <markdowncell>
+
+# Now that we have our three models and three posterior predictive distributions we see how well each model's predictions performed compared to the actual outcomes in the 2012-2013 season. Below are the R codes used to generate the visualizations, followed by the visualizations themselves.
+
+# <rawcell>
+
+# setwd( 'C:/Users/kevin/Desktop/Fall 2013/Stat 121/Final/' )
+# source( 'visualize.R' )
+# 
+# ## all season data
+# load("C:/Users/kevin/Desktop/Fall 2013/Stat 121/Final/ModelResults5.RData")
+# dat.postAS <- read.table( 'fg_post_groupby_sum.csv', sep = ',', h = T, quote = '' )
+# dat.preAS <- read.table( 'fg_pre_groupby_sum.csv', sep = ',', h = T, quote = '' )
+# rownames( dat.postAS ) <- dat.postAS$Id
+# rownames( dat.preAS ) <- dat.preAS$Id
+# 
+# ## data before December
+# dat.pre11 <- read.table( 'aggregated_pre_NOV_12_13.csv', sep=',', h = T, quote = "" )
+# 
+# IDs <- dat.pre11$Id
+# rownames( dat.pre11 ) <- IDs
+# IDs.c <- as.character( IDs )
+# 
+# ## adding players who did not play after all-star break
+# IDs.missing <- IDs[ ! IDs %in% dat.postAS$Id ]
+# add.postAS <- matrix( 0, ncol = ncol( dat.postAS ), nrow = length( IDs.missing ) )
+# rownames( add.postAS ) <- IDs.missing
+# dat.post <- rbind( dat.postAS, IDs.missing )
+# dat.post[ IDs.missing, ]$FG <- 0
+# dat.post[ IDs.missing, ]$FGA <- 0
+#        
+# ## generating data for all season / after December
+# dat.All <- data.frame( Id = IDs,
+#                        FG = dat.post[ IDs.c, ]$FG + dat.preAS[ IDs.c, ]$FG,
+#                        FGA = dat.post[ IDs.c, ]$FGA + dat.preAS[ IDs.c, ]$FGA )
+# dat.post11 <- data.frame( FG = dat.All$FG - dat.pre11$FG,
+#                           FGA = dat.All$FGA - dat.pre11$FGA )
+# rownames( dat.post11 ) <- IDs
+# 
+# ## remove players who did not playe after December
+# IDs.remove <- which( dat.post11$FGA == 0 )
+# dat.pre11 <- dat.pre11[ -IDs.remove, ]
+# dat.post11 <- dat.post11[ -IDs.remove, ]
+# 
+# names( post_means1 ) <- names( post_means2 ) <- names( post_means3 ) <- IDs
+# post_means1 <- post_means1[ -IDs.remove ]
+# post_means2 <- post_means2[ -IDs.remove ]
+# post_means3 <- post_means3[ -IDs.remove ]
+# 
+# ##
+# dat.final <- data.frame( id = dat.pre11$Id, 
+#                          name = dat.pre11$Name,
+#                          position = dat.pre11$Position,
+#                          pre = dat.pre11$FG / dat.pre11$FGA,
+#                          post = dat.post11$FG / dat.post11$FGA,
+#                          model_1 = post_means1,
+#                          model_2 = post_means2,
+#                          model_3 = post_means3,
+#                          pre.FG = dat.pre11$FG,
+#                          pre.FGA = dat.pre11$FGA,
+#                          post.FG = dat.post11$FG,
+#                          post.FGA = dat.post11$FGA )
+# id.missing <- which( is.na( dat.final$pre ) )
+# dat.final <- dat.final[ -id.missing, ]
+# dat.error <- data.frame( id = dat.final$id,
+#                          name = dat.final$name,
+#                          position = dat.final$position,
+#                          mle = dat.final$pre - dat.final$post,
+#                          model_1 = dat.final$model_1 - dat.final$post,
+#                          model_2 = dat.final$model_2 - dat.final$post,
+#                          model_3 = dat.final$model_3 - dat.final$post )
+# 
+# ## Generate Figures
+# dat.thin <- read.csv( 'SelectedPlayers.csv' )
+# wd <- 'Figures'
+# ids.thin <- dat.thin$Id
+# for( ii in 1:3 )
+#   generate_figures( ii, wd = wd, ids.thin= ids.thin )
+# 
+# 
+# 
+# ####### 2013-2014
+# rm( list = ls() )
+# load("C:/Users/kevin/Desktop/Fall 2013/Stat 121/Final/ModelResults14.RData")
+# source( 'visualize.R' )
+# 
+# dat.pre11 <- read.csv( 'id_groupby_sum_2014.csv' )
+# 
+# dat.final <- data.frame( id = dat.pre11$Id, 
+#                          name = dat.pre11$Name,
+#                          position = dat.pre11$Position,
+#                          pre = dat.pre11$FG / dat.pre11$FGA,
+#                          model_14 = post_means14,
+#                          pre.FG = dat.pre11$FG,
+#                          pre.FGA = dat.pre11$FGA )
+# id.remove <- which( is.na( dat.final$pre ) )  # players with 0 shooting attempts
+# dat.final <- dat.final[ -id.remove, ]
+# 
+# 
+# dat.thin <- read.csv( 'SelectedPlayers.csv' )
+# wd <- 'Figures'
+# ids.thin <- dat.thin$Id
+# generate_figures( 14, wd = wd, ids.thin= ids.thin, actual = F )
+# 
+# # dat.final$dif <- dat.final$model_14 - dat.final$pre
+# # write.table( dat.final, 'Projection_2014.dat', sep = '\t', quote = F,
+# #              row.names = F )
+
+# <rawcell>
+
+# require( gridExtra )
+# require( gplots )
+# require( ggplot2 )
+# require( reshape )
+# require( scales )
+# require( devtools )
+# 
+# generate_figures <- function( ii, wd = getwd(), actual = T, logScale = F, name.shrink = T, ids.thin = NULL ){
+#   orig.wd <- getwd()
+#   setwd( wd )
+#   
+#   model <- paste( 'model', ii, sep = '_' )
+#   if( actual ){
+#     dat <- data.frame( model = c( dat.final[[ model ]] ), actual = dat.final$post, mle = dat.final$pre,
+#                        pre_FGA = dat.final$pre.FGA, post_FGA = dat.final$post.FGA,
+#                        Id = dat.final$id, err.model = dat.error[[ model ]], err.mle = dat.error$mle,
+#                        Name = dat.final$name )    
+#   }else{
+#     dat <- data.frame( model = c( dat.final[[ model ]] ), mle = dat.final$pre,
+#                        pre_FGA = dat.final$pre.FGA, Id = dat.final$id, Name = dat.final$name )
+#   }
+#   
+#   dat$position <- sapply( dat.final$position, function( pp ){
+#     if( pp == 'PG' )
+#       return( 'Guard' )
+#     if( pp == 'SG' | pp == 'SF' )
+#       return( 'Wing' )
+#     return( 'Big-man' )
+#   })
+#   
+#   
+#   ## 2. Plot of x=Actual vs. y = Predicted
+#   tmp.i <- 3
+#   if( !actual )
+#     tmp.i <- 2
+#   
+#   plot.lim <- c( min( dat[ , 1:tmp.i ], na.rm = T ), max( dat[ , 1:tmp.i ], na.rm = T ) )
+#   
+#   dat.2.tmp1 <- data.frame( Model = 'model', Id = dat$Id, value = dat$model, x= dat$mle )
+#   dat.2.tmp2 <- data.frame( Model = 'pre', Id = dat$Id, value = dat$mle, x= dat$mle )
+#   if( actual ){
+#     dat.2.tmp3 <- data.frame( Model = 'post', Id = dat$Id, value = dat$actual, x= dat$mle )
+#     dat.2 <- rbind( dat.2.tmp1, dat.2.tmp2, dat.2.tmp3 )  
+#   }else{
+#     dat.2 <- rbind( dat.2.tmp1, dat.2.tmp2 )  
+#   }
+#   
+#   ss <- 1
+#   if( ! is.null( ids.thin ) ){
+#     dat.2 <- dat.2[ dat.2$Id %in% ids.thin, ]
+#     ss <- 3 
+#   }
+#   
+#   dat.2$Model <- factor( dat.2$Model, levels = c( 'model', 'pre', 'post' ) )  
+#   cols <- c( '#3399FF', 'grey50', '#009933' )
+#   
+#   plt2 <- ggplot( data = dat.2, aes( x = x, y = value, colour = factor( Model ) ) ) + 
+#     geom_point( size = ss, shape = 19 ) + xlim( plot.lim ) + ylim( plot.lim ) +
+#     scale_color_manual( name = 'Model', values = cols,
+#                         labels = c( 'Our model', 'MLE', 'Actual' ) ) +
+#     scale_fill_manual( name = 'Model', values = cols ) +
+#     xlab( 'Pre-December Field Goal Percentage' ) +
+#     ylab( 'Post-December Field Goal Perecentage')
+#   
+#   png( paste( model, '_plt2.png', sep ='' ) )
+#   print( plt2 )
+#   dev.off()
+#   
+#   
+#   ## 4. Histogram of Dif of Probability
+#   if( actual ){
+#     dat.4.tmp1 <- data.frame( model = 'model', se = dat$err.model^2 )
+#     dat.4.tmp2 <- data.frame( model = 'mle', se = dat$err.mle^2 )
+#     dat.4 <- rbind( dat.4.tmp1, dat.4.tmp2 )
+#     
+#     plt4 <- ggplot( dat.4, aes( x = se, fill = model ) ) +
+#       geom_bar( position = 'dodge', binwidth = 0.02 ) +
+#       xlab( 'Squared Error' ) + ylab( 'Counts' ) +
+#       scale_fill_manual( values = cols[ c( 1, 2 ) ], name = 'Model', labels = c( 'Our Model', 'MLE' ) ) +
+#       xlim( c( 0, max( dat.4$se ) + 0.02 ) )
+#     
+#     if( logScale )
+#       plt4 <- plt4 + scale_y_log10() 
+#     png( paste( model, '_plt4-1.png', sep ='' ) )
+#     print( plt4 )
+#     dev.off()
+#     
+#     dat.4.2 <- data.frame( dif.se = dat$err.model^2 - dat$err.mle^2 )
+#     plt4.2 <- ggplot( dat.4.2, aes( x = dif.se ) ) +
+#       geom_bar( binwidth = .01, fill = cols[ 3 ], colour = 'black' ) +
+#       xlab( 'Difference of Squared Error (Our Model - MLE)' ) + ylab( 'Counts' )
+#     if( logScale )
+#       plt4.2 <- plt4.2 + scale_y_log10()
+#     
+#     png( paste( model, '_plt4-2.png', sep ='' ) )
+#     print( plt4.2 )
+#     dev.off()
+#   }
+#   
+#   ## 1. Shrinkage Plot
+#   
+#   lvl <- levels( factor( c( 'mle', model ) ) )
+#   dat.1.tmp1 <- data.frame( model = 'mle', player = dat$Name, FGA = dat$pre_FGA,
+#                             value = dat$mle, id = dat$Id, pos = dat$position )
+#   
+#   dat.1.tmp2 <- data.frame( model = model, player = dat$Name, FGA = dat$pre_FGA,
+#                             value = dat$model, id = dat$Id, pos = dat$position )
+#   dat.1 <- rbind( dat.1.tmp1, dat.1.tmp2 )
+#   dat.1$model <- factor( dat.1$model, levels = lvl )
+#   if( ! is.null( ids.thin ) ){
+#     dat.1 <- dat.1[ dat.1$id %in% ids.thin, ]
+#     dat.1.tmp1 <- dat.1.tmp1[ dat.1.tmp1$id %in% ids.thin, ]
+#   }
+#   
+#   plt1 <- ggplot( dat.1, aes( x = model, y = value, colour = pos ) ) +
+#     geom_line( aes( group = player ) ) + geom_point( show_guide = F ) +
+#     scale_x_discrete( breaks = c( 'mle', model ), expand = c( 0, 0.5 ), 
+#                       labels = c( 'Pre-December', 'Our Model') ) + labs( x= '', y = 'Field Goal Percentage') +
+#     scale_color_discrete( 'Position' )  
+#   #geom_point( colour = '#3399FF' ) +
+#   #+ theme(legend.position="none")
+#   if( name.shrink )
+#     plt1 <- plt1 + geom_text( data = dat.1.tmp1, position= 'dodge', colour = 'black',
+#                               aes( hjust = 1.1, label = player, size = 1 ), show_guide = F ) 
+#   
+#   
+#   png( paste( model, '_plt1.png', sep ='' ), width = 650  )
+#   print( plt1 )
+#   dev.off()
+#   
+#   ## 3. x=MLE vs. y=Model (showing shrinkage)
+#   #ggplot( data = dat, aes( x = mle, y = model ) ) +
+#   #  geom_line( aes( x = xx, y = yy ), colour ='red' ) +
+#   #  geom_point( shape = 20, size = 3, colour = '#3399FF' ) +
+#   #  xlim( plot.lim ) + ylim( plot.lim )
+#   nn <- nrow( dat )
+#   col.3 <- c( gg_color_hue( 3 ), 'grey50' )
+#   dat.3.tmp1 <- data.frame( Model = 'model', Id = dat$Id, value = dat$model, 
+#                             x = rank(dat$mle )/nn, x.tmp = dat$mle, pos = dat$position )
+#   dat.3.tmp2 <- data.frame( Model = 'pre', Id = dat$Id, value = dat$mle, 
+#                             x= rank( dat$mle )/nn, x.tmp = dat$mle, pos = 'mle' )
+#   dat.3 <- rbind( dat.3.tmp1, dat.3.tmp2 )
+# 
+#   cols <- c( '#3399FF', 'grey50' )
+#   plt3.tmp <- ggplot( data = dat.3, aes( x = x.tmp, y = value, colour = factor( pos ) ) ) + 
+#     geom_point( ) + #xlim( plot.lim ) + ylim( plot.lim ) +
+#     scale_color_manual( name = 'Model/Position', values = col.3,
+#                         labels = c( paste( 'Our Model', levels( dat.3.tmp1$pos ), sep =' / ' ), 'MLE' ) ) +
+#     scale_fill_manual( name = 'Model', values = col.3 ) +
+#     labs( x = 'Pre-December Field Goal Perecentage', y = 'Post-December Field Goal Perecentage' )
+#   
+#   plt3 <- ggplot( data = dat.3, aes( x = x, y = value, colour = factor( pos ) ) ) + 
+#     geom_point( ) + #xlim( plot.lim ) + ylim( plot.lim ) +
+#     scale_color_manual( name = 'Model/Position', values = col.3,
+#                         labels = c( paste( 'Our Model', levels( dat.3.tmp1$pos ), sep =' / ' ), 'MLE' ) ) +
+#     scale_fill_manual( name = 'Model', values = col.3 ) +
+#     labs( x = 'Pre-December Field Goal Perecentage', y = 'Post-December Field Goal Perecentage' )
+#   
+#   png( paste( model, '_plt3.png', sep ='' ) )
+#   print( plt3 )
+#   dev.off()
+#   
+#   png( paste( model, '_plt3_tmp.png', sep = '' ) )
+#   print( plt3.tmp )
+#   dev.off()
+#   
+#   ## 5. x = post_FGA vs. y = dif. of error
+#   if( actual ){
+#     dat.5 <- data.frame( x = dat$pre_FGA, y = dat$err.model^2 - dat$err.mle^2 )
+#     plt5 <- ggplot( data = dat.5, aes( x = x, y = y ) ) +
+#       geom_point( colour = '#3399FF' ) + xlab( 'Pre-December Field Goal Attempts' ) +
+#       ylab( 'Difference of Squared Error (Our Model - MLE)' ) + scale_x_log10()
+#     png( paste( model, '_plt5.png', sep ='' ) )
+#     print( plt5 )
+#     dev.off()  
+#   }
+#   
+#   
+#   setwd( orig.wd )
+# }
+# 
+# gg_color_hue <- function( n ) {
+#   hues = seq(15, 375, length = n + 1 )
+#   hcl( h = hues, l = 65, c = 100 )[ 1:n ]
+# }
+
+# <markdowncell>
+
+# Now that we have all our visualizations, we will discuss each one for each of the 3 models. The graphs are as follows:
+# 
+# **Graph 1:** This visualization is a "shrinkage plot" for 13 selected players. These players were manually selected to most cleanly demonstrate how our model shrinks the FG% (so the text for the names in the plot do not overlap). Players with extreme pre-December 1 FG% are shrunk toward a central value. These players remain the same throughout all visualizations.
+# 
+# **Graph 2:** In this visualization we use a scatterplot to look at pre- and post-December 1 field goal percentages for the 13 players from graph 1. We plot the MLE or "naive" predictions in gray as the y=x, 45 degree line. This means that the MLE model predicts whatever players are shooting now will remain constant throughout the rest of the season. Our model is plotted in blue while the actual FG% are plotted in green. 
+# 
+# **Graph 3-1:** This graph is the same as graph 2 but for all players. We do not include actual post-December 1 values as the graph would become too cluttered and unreadable. The average slope of the model predictions for our model is less steep than the naive model due to our inclusion of shrinkage.
+# 
+# **Graph 3-2:** This graph is the same as graph 3-1 but with the x values organized into quantiles. This graph was included to better visualize the players clustered closely near the center of the graph. This is like a Q-Q plot except we leave the y values as raw predictions.
+# 
+# **Graph 4-1:** This is a histogram of squared errors for our model and MLE. As you'll see most squared errors in this plot are very small. However we did not use a log transformation because the presentation of bins with counts of 1 in ggplot2 were non-sensical. 
+# 
+# **Graph 4-2:** This is a histogram of the differences between the squared errors of our model and those of the MLE model. Negative values mean that our model performed better than the naive model.
+# 
+# **Graph 5:** Scatterplot of the differences from graph 4-2 versus pre-December 1 field goal attempts. The x-axis is on a log scale to highlight players with small sample sizes.
+
+# <headingcell level=4>
+
+# Model 1
+
+# <headingcell level=5>
+
+# **Graph 1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="../files/Model_1/model_1_plt1.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# One point of interest that showcases our model well is the crossing of Hasheem Thabeet's and Tyson Chandler's predictions. Thabeet has a higher pre-December FG% but is predicted to end up with a lower FG% than Chandler in our model. In this case, both get shrunk toward the central value but Thabeet shrinks more because he has a smaller sample size pre-December 1. From Chandler's perspective, he is shrunk as well but not as much as Thabeet because of his relatively larger sample size.
+# 
+# DeMarcus Cousins is also worth noting as his plot is flat. This indicates he shot an average FG% pre-December 1 and thus we do not predict much regression toward the mean since he is already shooting at the mean FG%. In his case MLE would likely produce predictions equally as good as our model.
+# 
+# The position colors are irrelevant for this model, as all players are shrunk toward one common central value; those will come into play later.
+
+# <headingcell level=5>
+
+# **Graph 2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_1/model_1_plt2.png" width=550>
+# </div>
+
+# <markdowncell>
+
+# In this plot we can see how our predictions did relative to the MLE predictions for the 13 players from graph 1 using the actual post-December 1 data. Overall our predictions are closer to the actual data than the MLE. We chose these 13 players without looking at the actual post-December 1 data.
+# 
+# Indeed we correctly predicted the re-ordering of Thabeet and Chandler. Thabeet is the right-most point and Chandler the second from the right. Thabeet did indeed drop more than Chandler in the post-December 1 data, just as our model predicted.
+# 
+# Cousins, as expected, remains average throughout the season.
+# 
+# Model 1 has a relatively weak prior, with empirical Bayes estimates of $\alpha=4.93$ and $\beta=6.89$.  We can see that our predictions are shrunk weakly toward the central FG% value, and perhaps a stronger prior is needed.
+
+# <headingcell level=5>
+
+# **Graph 3-1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_1/model_1_plt3_tmp.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# From the graph, you can clearly see the shrinkage for all players. Many of the players are in the middle of the pack and for those on either extreme, our model pulls their predictions closer to the center, sometimes up to over 50 percentage points.
+
+# <headingcell level=5>
+
+# **Graph 3-2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_1/model_1_plt3.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# This graph too shows shrinkage in action, with x-axis transformed to we can more clearly see the "middle" players. The players in the middle 25% of the graph have model predictions that strongly resemble MLE. As before, players on either extreme are pulled toward the center by as much as 50 percentage points depending on pre-December 1 sample size.
+
+# <headingcell level=5>
+
+# **Graph 4-1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_1/model_1_plt4-1.png" width=550>
+# </div>
+
+# <markdowncell>
+
+# Both our model and MLE performed fairly well for a number of players as shown by the large bins near 0. MLE grossly mis-estimates for a good chunk of players as shown by the handful of bars along the x-axis to the right, past 0.1. Our model's errors are generally smaller than MLE. When we calculate the mean squared error it is much lower than MLE. MLE's MSE is 0.0171 while our model is 0.0062.
+
+# <headingcell level=5>
+
+# **Graph 4-2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_1/model_1_plt4-2.png" width=550>
+# </div>
+
+# <markdowncell>
+
+# Most of these differences are negative which means our model does better at predicting FG% than MLE. Our model did better than MLE on 287 out of 401 players or 72% of all players. What that means is that 72% of the area in this histogram is left of 0.
+
+# <headingcell level=5>
+
+# **Graph 5**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_1/model_1_plt5.png" width=550>
+# </div>
+
+# <markdowncell>
+
+# For players with fewer pre-December field goal attempts, our model makes much better predictions than MLE. This makes sense because our model is designed to shrink extreme values back to more reasonable values. For players with many pre-December 1 field goal attempts, they have similar error magnitudes. This also makes sense because as sample size increases, the observed data gradually overrides any prior/hyperprior distributions placed on the parameters.
+
+# <headingcell level=4>
+
+# Model 2
+
+# <headingcell level=5>
+
+# **Graph 1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt1.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# This plot is fairly similar to its counterpart from Model 1, with extreme-shooting players shrunk down toward a common central value.  The same 13 players are shown.  The lines in this graph are generally steeper than they were in Model 1, suggesting that the hyperpriors on $\alpha$ and $\beta$ effectively created a somewhat stronger prior on the $\theta_i$'s.  The stronger prior can be thought of as implementing larger prior sample sizes.  The stronger prior shrinks players more toward the center than they were in Model 1.
+# 
+# The position colors are also irrelevant here but will be relevant in Model 3.
+
+# <headingcell level=5>
+
+# **Graph 2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt2.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# We again see the effectively stronger prior in Model 2, as the predictions are shrunk more toward the center than they were in Model 1.  Judging from these 13 players, the shrinkage is no longer under-shrinking as it was in Model 1, but perhaps now it is a little too strong (over-shrinking).  This is particularly noticeable for Chandler and Thabeet (the two rightmost points), where our predictions now underestimate the actual post-December 1 FG%.
+
+# <headingcell level=5>
+
+# **Graph 3-1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt3_tmp.png" width=600>
+# </div>
+
+# <headingcell level=5>
+
+# **Graph 3-2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt3.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# Both Graphs 3-1 and 3-2 show the stronger effectively perior, squeezing in the predictions tighter (closer to the central value) than they were in Model 1.
+
+# <headingcell level=5>
+
+# **Graph 4-1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt4-1.png" width=550>
+# </div>
+
+# <markdowncell>
+
+# Model 2 also outperforms the MLE in terms of squared error.  Model 2's MSE was 0.0043, compared to 0.0171 for the MLE.  Model 2 also beat out Model 1 in terms of MSE (Model 1's MSE was 0.0062).
+
+# <headingcell level=5>
+
+# **Graph 4-2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt4-2.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# Model 2 predictions beat the MLE predictions, in terms of squared error, for 268 of 401 (67%) players.  Interestingly, Model 2 had a lower MSE than Model 1 but beat the MLE for fewer players than Model 1 did (287 of 401 for 72%).  This suggests that Model 2 predictions were generally closer than Model 1 predictions to their actual post-December 1 FG% realizations, but that by chance, the MLE beat out Model 2 for a few players (likely toward the center, where all the predictions were close).
+
+# <headingcell level=5>
+
+# **Graph 5**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_2/model_2_plt5.png" width=550>
+# </div>
+
+# <markdowncell>
+
+# Again, we see that Model 2 does much better than the MLE for players with small FGA numbers (sample size).  If pre-December 1 sample sizes are large enough, the MLE is reasonably close to model predictions.
+
+# <headingcell level=4>
+
+# Model 3
+
+# <headingcell level=5>
+
+# **Graph 1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt1.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# The main takeaway here is the clustering of colors.  The "bigs" gravitate toward a higher central value than wings, who gravitate toward a higher central value than point guards.  This result is by design in the model, where each position category had its own prior.
+# 
+# We can see the prediction for Nazr Mohammed, a big who shot very poorly pre-December 1, is pulled strongly upward.  However, his pre-December 1 FG% was so poor that he is still projected to shoot worse than a few guards and wings.  Chandler and Thabeet are shrunk down less because of the higher central value for bigs.
+# 
+# D.J. Augustin is pulled up only slightly, to the lowest central value, for point guards.
+
+# <headingcell level=5>
+
+# **Graph 2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt2.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# For these 13 players (chosen before looking at actual post-December 1 data), Model 3 performs extremely well and better than Models 1 and 2.  The model predictions are almost right next to the actual post-December 1 FG% numbers!
+
+# <headingcell level=5>
+
+# **Graph 3-1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt3_tmp.png" width=600>
+# </div>
+
+# <headingcell level=5>
+
+# **Graph 3-2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt3.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# In Graphs 3-1 and 3-2, we see higher variation in predictions than we saw in the corresponding graphs for Models 1 and 2. This is due to the separation of position-specific central locations.  Instead of all being shrunk toward one common mean, predictions are now shrunk toward one of three means, depending on a player's position.  When visualizing all players, we see more variability because there are now three central values.  The central values are relatively close to one another, so it just looks like overall, predictions are not as narrow.  This can be validated easily by looking at predicted values of each position which are shown in different colors. Each position forms a layer, rather than being mingled as in Graphs 3-1 and 3-2 of Model 1 and Model 2, indicating that they are regressing toward the mean of each position.  
+
+# <headingcell level=5>
+
+# **Graph 4-1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt4-1.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# Model 3 easily beats the MLE in terms of MSE, with an MSE of 0.0039 (compared to 0.0171 for the MLE).  Model 3 has the lowest MSE of all of our models.
+
+# <headingcell level=5>
+
+# **Graph 4-2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt4-2.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# Model 3 beats the MLE for 287 of 401 (72%) players.
+
+# <headingcell level=5>
+
+# **Graph 5**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3/model_3_plt5.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# Pre-December 1 FGA (sample size) remains a big driver of when Model 3 outperforms the MLE.
+
+# <headingcell level=3>
+
+# Applying Our Model to the Current (2013-2014) Season
+
+# <markdowncell>
+
+# Now to make predictions!  We obtain data for the current (2013-2014) NBA season and, using the data available so far (until the end of November 2013), make predictions for each player's FG% for the remainder of the season.
+# 
+# We reuse code from earlier in the process book to obtain the data and then rerun our exploratory analysis and model-building using the new data.
+
+# <headingcell level=4>
+
+# Obtaining the New Data
+
+# <markdowncell>
+
+# First, we modify the get_player_data function from above to get data from the 2013-2014 season.
+
+# <codecell>
+
+"""
+function: get_player_data_2014
+
+description: takes a player id, scrapes CBS website for that player's data, returns tuple with stat headings (FG, FGA, MIN, etc)
+as first element and a dict containing all stats for all games player participated in for 2013-2014 season as second element.
+Entries in the dict are keyed on the date of the game.
+
+inputs: player_id: int
+
+outputs: tuple. First element is list of of stat headings. Second element is a dict. Dict is keyed on game date and values are lists 
+of the games' stats.
+"""
+
+def get_player_data_2014(player_id):
+    # The following while loop is used to handle server timeouts. Occasionally the CBS server would not return information
+    # and the program would exceed the max allowable retries. The while loop limits request tries to 3 and then returns None
+    # and moves on if it hasn't gotten information from the server.
+    
+    attempt = 0
+    
+    while attempt <= 2: 
+        try:
+            html = requests.get('http://fantasynews.cbssports.com/fantasybasketball/players/player/gamelogs/2013/%d' % player_id).text
+            break
+            
+        except:
+            attempt += 1
+    
+    if attempt == 3:
+        return None
+    
+    dom = web.Element(html)
+    data = {}
+    headings = []
+    
+    # This if statement checks to see if any usable data at all was returned. Some players with IDs did not play for the entirety
+    # of the season and thus had no data.
+    if len(dom.by_class('label')) == 0:
+        return None
+    
+    # This loop produces the headings for the individual stats. (i.e. FG, FGA, MIN, etc.)
+    for i, stat_headings in enumerate(dom.by_class('label')[1]):
+        # We need to knock off the html tags.
+        heading = str(stat_headings)[4:-5]
+        if len(heading) > 0 and i > 1:
+            headings.append(heading)
+    
+    # This loop grabs the data for each game and puts it in a dict keyed on the date of each game
+    for element in dom.by_class('data borderTop'):
+        for row in element.by_tag('tr'):
+            for i, each in enumerate(row.by_tag('td')):
+                if i == 0:
+                    #the key here is the date of the game
+                    key = str(each.content)
+                    data[key] = []
+                else:
+                    data[key].append(each.content)
+                    
+    return (headings, data)
+
+# <markdowncell>
+
+# We also need to modify the get_all_player_data function to use the new get_player_data_2014 function.
+
+# <codecell>
+
+"""
+Function: get_all_player_data_2014
+
+Description: gets all player data for the 2013-2014 season.
+
+Inputs: None
+
+Outputs: Dataframe of all players and their data
+"""
+
+def get_all_player_data_2014():
+    #Part of this solution is from the HW3 solution, problem 1.2
+    
+    #First we grab all player ids.
+    ids = get_player_ids()
+    dfs = []
+    
+    #Next we iterate through the ids, grabbing everyone's data, and appending it to the dfs list it.
+    for player_id in ids:
+        
+        #unpack the ids
+        pid, player_name, player_position = player_id
+        
+        #get the player's data, checking to make sure it's actually there
+        player_data = get_player_data_2014(pid)
+        if player_data != None:
+            headings, raw_data = player_data
+        else:
+            continue
+        
+        #Now we clean that data...
+        data = clean_data(headings, raw_data)
+        
+        #...and package it into a nice dataframe
+        player_df = make_dataframe(pid, player_name, player_position, headings, data)
+        dfs.append(player_df)
+    
+    all_player_df = pd.concat(dfs, ignore_index=True)
+    
+    return all_player_df
+
+# <markdowncell>
+
+# Now that we have those two functions modified appropriately, we can scrape the data and download it as a csv file for later use.
+
+# <codecell>
+
+#all_data_2014 = get_all_player_data_2014()
+#all_data_2014.to_csv('all_data_2014.csv', index=False)
+all_data_2014 = pd.read_csv('all_data_2014.csv')
+
+# <markdowncell>
+
+# In the same way as before, we calculate shooting percentages and rearrange columns to a more intuitive format
+
+# <codecell>
+
+cols = ['Id', 'Name', 'Date', 'Position', 'Opp', 'Result', 'MIN', 'FG', 'FGA', 'FG3', 'FG3A', 'FT', 'FTA', 
+        'OFF', 'REB', 'TREB', 'A', 'STL', 'BLK', 'TO', 'PF', 'PTS']
+
+all_data_2014 = all_data_2014[cols]
+
+# <markdowncell>
+
+# As before, we drop games for players who did not enter the game and convert the dates to datetime objects.
+
+# <codecell>
+
+all_data_2014 = all_data_2014[~all_data_2014['MIN'].isnull()]
+
+all_data_2014['Date'] = pd.to_datetime(all_data_2014['Date'])
+
+all_data_2014['FG%'] = all_data_2014['FG']/all_data_2014['FGA']
+
+# <markdowncell>
+
+# And now, we create a groupby object to use in our exploratory data analysis and predictions for the 2013-2014 season.
+
+# <codecell>
+
+id_groupby_sum_2014 = all_data_2014.groupby(['Id', 'Name'], as_index = False).sum()
+id_groupby_2014 = all_data_2014.groupby(['Id', 'Name'], as_index = False).mean()
+
+# <codecell>
+
+fg_all_2014 = id_groupby_2014.copy()
+#Need to make sure there are only people who actually attempted field goals included
+fg_all_2014 = fg_all_2014[~fg_all_2014['FG%'].isnull()]
+plt.hist(fg_all_2014['FG%'], bins = 50)
+
+#plot a mean and median line to look for possible skewing
+plt.axvline(fg_all_2014['FG%'].median(), color = 'b', label = 'Median')
+plt.axvline(fg_all_2014['FG%'].mean(), color = 'r', label = 'Mean')
+axes = plt.gca()
+axes.set_xlim(0, 1)
+plt.title('FG% All Players 2013-14 Season So Far')
+plt.xlabel('Field Goal %')
+plt.legend(loc = 1)
+remove_border()
+plt.show()
+
+print "Median is: ", fg_all_2014['FG%'].median()
+print "Mean is: ", fg_all_2014['FG%'].mean()
+print "Variance is: ", fg_all_2014['FG%'].var()
+
+# <markdowncell>
+
+# The field goal percentages here seem to roughly resemble a normal distribution already.
+
+# <headingcell level=4>
+
+# Making the Prediction
+
+# <markdowncell>
+
+# In order to make the prediction for the 2013-2014 season, we use code in R as before. It is pasted below.
+
+# <rawcell>
+
+# #Bayesian Hierarchical Model 3 (position-specific priors)
+# bb_code3 <- '
+#   data{
+# 	int<lower=0> nplayers; #number of players (equals number of observations)
+# 	int<lower=0> npositions; #number of positions
+# 	int<lower=0> positioncat[nplayers]; #position category
+# 	int<lower=0> FGA[nplayers]; #field goal attempts
+# 	int<lower=0> FGM[nplayers]; #field goals made
+#   }
+#   parameters{
+# 	real<lower=0,upper=1> theta[nplayers];
+# 	real<lower=0> alpha[npositions];
+# 	real<lower=0> beta[npositions];
+#   }
+# #  transformed parameters{
+# #	any transformed parameters here
+# #  }
+#   model{
+# 	for(pos in 1:npositions){
+# 		alpha[pos] ~ gamma(2,.05);
+# 		beta[pos] ~ gamma(2,.05);
+# 	}
+# 	for(i in 1:nplayers){
+# 		theta[i] ~ beta(alpha[positioncat[i]],beta[positioncat[i]]);
+# 		FGM[i] ~ binomial(FGA[i],theta[i]);
+# 	}
+#   }
+# '
+# 
+# #position categories (1 if point guard, 2 if wing, 3 if big)
+# positioncat=1*(bbdata14$Position=="PG")+
+# 	2*(bbdata14$Position %in% c("SG","G","SF"))+
+# 	3*(bbdata14$Position %in% c("PF","F","C"))
+# 
+# bb_dat14 <- list(nplayers=nrow(bbdata14),npositions=length(unique(positioncat)),
+# 	positioncat=positioncat,FGA=bbdata14$FGA,FGM=bbdata14$FG)
+# 
+# fit14=stan(model_code=bb_code3,data=bb_dat14,iter=1000,chains=4)
+# 
+# samps14=extract(fit14,permute=TRUE,inc_warmup=FALSE)
+# c(mean(samps14$theta[,1]),sd(samps14$theta[,1])) #posterior mean and SD
+# quantile(samps14$theta[,1],c(.05,.25,.5,.75,.95)) #posterior quantiles
+# 
+# post_means14=apply(samps14$theta,MARGIN=2,mean)
+# post_medians14=apply(samps14$theta,MARGIN=2,median)
+
+# <headingcell level=4>
+
+# Results
+
+# <markdowncell>
+
+# We now import our predictions for 2014, comment on a few visualizations based on those predictions, and pull out our top 5 predictions for the 2014 season.
+
+# <codecell>
+
+predictions_2014 = pd.read_csv('Projection_2014.csv')
+
+# <markdowncell>
+
+# The graphs are as follows:
+# 
+# **Graph 1:** This visualization is a "shrinkage plot" for 13 selected players. These players were manually selected to most cleanly demonstrate how our model shrinks the FG% (so the text for the names in the plot do not overlap). Players with extreme pre-December 1 FG% are shrunk toward a central value. These players remain the same throughout all visualizations.
+# 
+# **Graph 2:** In this visualization we use a scatterplot to look at pre- and post-December 1 field goal percentages for the 13 players from graph 1. We plot the MLE or "naive" predictions in gray as the y=x, 45 degree line. This means that the MLE model predicts whatever players are shooting now will remain constant throughout the rest of the season. Our model is plotted in blue while the actual FG% are plotted in green. 
+# 
+# **Graph 3:** This graph is the same as graph 3-1 but with the x values organized into quantiles. This graph was included to better visualize the players clustered closely near the center of the graph. This is like a Q-Q plot except we leave the y values as raw predictions.
+
+# <headingcell level=5>
+
+# **Graph 1**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3_2014/model_14_plt1.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# These players are the same 13 players from the 2012-2013 visualizations. Here LeBron James has a very high shooting percentage but is not predicted to shrink much because of his large pre-December 1 sample size. Cousins remains decidedly average.
+
+# <headingcell level=5>
+
+# **Graph 2**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3_2014/model_14_plt2.png" width=500>
+# </div>
+
+# <markdowncell>
+
+# As before players with extreme pre-December 1 FG% are shrunk toward the center. As an interesting aside, we see regression toward the mean between seasons in this plot. These are the same 13 players as  the ones from 2012-2013 and were previously chosen for their wide range of pre-December FG% in the 2012-2013 season. Here, in the 2013-2014 season, they are much less spread out and closer to the average FG%.
+
+# <headingcell level=5>
+
+# **Graph 3**
+
+# <markdowncell>
+
+# <div class="banner-container">
+# <img src="files/Model_3_2014/model_14_plt3.png" width=600>
+# </div>
+
+# <markdowncell>
+
+# Here too our model pulls extreme values toward the center but because we are differentiating players based on position played, our predictions are more spread out. Big-men are generally predicted to have higher FG% compared to Wings, who are exepcted to have higher FG% than Guards.
+
+# <markdowncell>
+
+# Since we can't observe the actual data from the remainder of the 2013-2014 season (it hasn't happened yet) we cannot provide plots detailing evaluating our model's errors.
+
+# <markdowncell>
+
+# Let's check that our 2014 predictions are imported in a good format.
+
+# <codecell>
+
+predictions_2014.head()
+
+# <markdowncell>
+
+# Here are the players with the highest predicted FG% after December 1st, 2013.
+
+# <codecell>
+
+predictions_2014.sort( columns = 'Projected Post-December FG%', ascending = False ).head()
+
+# <markdowncell>
+
+# Not surprisingly, many of the top predictions are "big men" (centers or power forwards).  Mason Plumlee is a rookie on the Brooklyn Nets - what a rookie campaign that would be if he finished second in FG%!
+# 
+# Lebron James is the only non-big in the top 5 (he is classified as a wing in this dataset).  His current 59.5% shooting percentage is remarkable given the volume of shots he has taken.  We wouldn't be surprised at all to see him here!
+
+# <markdowncell>
+
+# Now let's look at the players with the lowest predicted FG% after December 1st, 2013.
+
+# <codecell>
+
+predictions_2014.sort( columns = 'Projected Post-December FG%' ).head()
+
+# <markdowncell>
+
+# Five point guards!  Exactly what we would expect.  Interestingly, some big-name point guards (Steve Nash and Derrick Rose) are the in bottom five.  Nash is predicted to increase his FG% by 11%, but his pre-December 1 FG% is so poor that he's sitll in the bottom 5.  Rose is actually injured for the rest of the season, so his FG% won't be defined post-December 1.
+
+# <markdowncell>
+
+# Here are the players with the largest difference between FG% before December 1st and predicted FG% after December 1st, 2013.
+
+# <codecell>
+
+pre_tmp = predictions_2014.loc[ predictions_2014.get( 'Pre-December FG' ) > 1, : ]
+pre_tmp.sort( columns = 'Difference between Pre-December and Projected Post-December (Absolute Value)', ascending = False ).head()
+
+# <markdowncell>
+
+# Again as we'd expect, the players with the highest predicted differences are players shooting extremely well or extremely poorly, with small sample size.  Greg Smith at 85% - wow!  (He basically only dunks.)  Shabazz Muhammad, a high-profile 2013 draft choice, has shot extremely poorly, but our projection is that he'll end up in the middle of the road, around 42%.  Jeremy Evans actually has a much higher pre-December 1 FGA than the others - it'll be interesting to see if his FG% drops as much as we predict it will (drop by 23%).
+
+# <markdowncell>
+
+# Here are the players with the smallest difference between FG% before December 1st and predicted FG% after December 1st.
+
+# <codecell>
+
+predictions_2014.sort( column = 'Difference between Pre-December and Projected Post-December (Absolute Value)' ).head()
+
+# <markdowncell>
+
+# These players are the ones who have shot very close to average FG% and/or have taken many shot attempts.  Four of the five players here have large sample sizes, and they've also shot middle-of-the-pack percentages (in the mid-40s).  Note that "middle-of-the-pack" means different things for different positions.  Josh Harrellson hasn't shot the ball much, but he just happens to have shot a percentage extremely close to the "big man" central value.  So his FG% prediction is pretty much in line with his pre-December 1 FG%.
+
+# <markdowncell>
+
+# Finally, let's look at Anthony Bennett, the number one "draft bust" we mentioned at the beginning of this notebook.  What do we predict his post-December 1 FG% to be?
+
+# <codecell>
+
+predictions_2014[predictions_2014['Name']=='Anthony Bennett']
+
+# <markdowncell>
+
+# About 40% - not too shabby!  That certainly wouldn't make him an epic draft bust.  Let's see how the rest of the season plays out!
+
+# <headingcell level=3>
+
+# Conclusions and Final Remarks
+
+# <markdowncell>
+
+# In this process book, we provide motivation for analyzing NBA data in a principled fashion, using statistical modeling to make predictions about field goal percentages instead of spinning stories based on possible random noise observed during the first 33 days of the season.  We outline three Bayesian hierarchical models that share a similar flavor but have reasonable variations that give each model its own specific taste.  We present results based on 2012-2013 data and show that all three of our models outperform naive MLE predictions in terms of both mean squared error and in terms of the proportion of players for which predictions are closer to actual data.  We then choose one model to run on 2013-2014 data and make predictions about the remainder of the current NBA season.
+# 
+# Our 2013-2014 results predict that Anthony Bennett, the number one pick in the 2013 draft, won't be as big a bust as some pundits are making him out to be.  We predict him to shoot around 40% for the remainder of the season, which is slightly lower than average but not extremely so.  However, we predict one of his draftmates, Mason Plumlee, to have the second-highest FG% for the remainder of the season.  We also predict Lebron James to shoot over 50% for the remainder of the season, placing him in the top 5, and Steve Nash to shoot under 40% for the remainder of the season, placing him with the poorest shooters.
+# 
+# Overall, we chose to use Model 3, which incorporates position-specific shrinkage centers, for our 2013-2014 predictions.  Model 3 demonstrated the lowest mean squared error, easily outperforming the naive MLE and also bested Models 1 and 2.  From a sample of 13 players (selected before observing post-December 1, 2012 data), Model 3 performed extremely well.
+# 
+# Our models tell us that we should be cautious about hot and cold shooting starts to the NBA season.  Most players with extremely high and low field goal percentages have taken relatively few shots, and their percentages up to this point cannot be trusted for extrapolation to the remainder of the season.  However, we can use that data, in combination with data from other players, to make intuitive statistical adjustments that produce extremely sensible predictions.  The 2012-2013 checks against actual data show these predictions to do quite well, easily outperforming the naive extrapolated estimates.
+# 
+# In the end, sports are filled with intricacies and random variation (not to mention flawed human referees) that make any result difficult to predict perfectly, even with the most complicated models.  After all, those intracacies and variations are what make sports so emotional, captivating, and exciting.
+
